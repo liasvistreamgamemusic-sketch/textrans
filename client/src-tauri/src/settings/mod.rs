@@ -1,4 +1,4 @@
-//! 設定項目 (design.md §5.8)。JSON でファイルに保存し、トークンだけは keyring に保存する。
+//! 設定項目 (design.md §5.8)。JSON でファイルに保存し、トークンだけは別ファイル (0600) に保存する。
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -93,59 +93,26 @@ pub fn save(path: &Path, settings: &Settings) -> Result<(), SettingsError> {
     std::fs::write(path, json).map_err(SettingsError::Write)
 }
 
-/// トークン (secrets) は keyring 経由で OS のキーチェーン/資格情報マネージャーに保存する
-/// (design.md §5.1)。設定 JSON には絶対に書かない。
-///
-/// 実装計画: macOS の ad-hoc 署名アプリでは keychain アクセスが拒否される事例があるため、
-/// keyring アクセスが失敗したら理由を warn ログに出したうえで、設定ファイルと同じディレクトリの
-/// `token` ファイル (0600、ファイル所有者のみ読み書き可) へフォールバックする。
+/// トークン (secrets) は設定ファイルと同じディレクトリの `token` ファイル (0600) に保存する。
+/// 設定 JSON には絶対に書かない。
 pub mod token {
+    // DECISION: ファイル over keychain because ad-hoc 署名の .app はビルドごとに別アプリ扱いになり、
+    // macOS の keychain が毎回確認ダイアログを出す・既存項目を更新できない (実機で確認)。
+    // 個人用 LAN ツールでは 0600 ファイルの方が確実に動く。
     use std::path::{Path, PathBuf};
 
-    use keyring::Entry;
-
-    const SERVICE: &str = "textrans-voice-client";
-    const ACCOUNT: &str = "voice-server-token";
-    const FALLBACK_FILE_NAME: &str = "token";
+    const FILE_NAME: &str = "token";
 
     #[derive(Debug, thiserror::Error)]
     pub enum TokenError {
-        #[error("キーチェーン/資格情報マネージャーへのアクセスに失敗: {0}")]
-        Keyring(#[from] keyring::Error),
         #[error("トークンファイルの読み込みに失敗: {0}")]
         FileRead(#[source] std::io::Error),
         #[error("トークンファイルの書き込みに失敗: {0}")]
         FileWrite(#[source] std::io::Error),
     }
 
-    fn entry() -> Result<Entry, TokenError> {
-        Ok(Entry::new(SERVICE, ACCOUNT)?)
-    }
-
-    fn fallback_path(settings_dir: &Path) -> PathBuf {
-        settings_dir.join(FALLBACK_FILE_NAME)
-    }
-
-    fn read_fallback(settings_dir: &Path) -> Result<Option<String>, TokenError> {
-        let path = fallback_path(settings_dir);
-        match std::fs::read_to_string(&path) {
-            Ok(raw) => {
-                let trimmed = raw.trim();
-                Ok(if trimmed.is_empty() { None } else { Some(trimmed.to_string()) })
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(e) => Err(TokenError::FileRead(e)),
-        }
-    }
-
-    fn write_fallback(settings_dir: &Path, token: &str) -> Result<(), TokenError> {
-        let path = fallback_path(settings_dir);
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(TokenError::FileWrite)?;
-        }
-        std::fs::write(&path, token).map_err(TokenError::FileWrite)?;
-        restrict_to_owner(&path);
-        Ok(())
+    fn token_path(settings_dir: &Path) -> PathBuf {
+        settings_dir.join(FILE_NAME)
     }
 
     #[cfg(unix)]
@@ -159,59 +126,56 @@ pub mod token {
     #[cfg(not(unix))]
     fn restrict_to_owner(_path: &Path) {}
 
-    fn delete_fallback(settings_dir: &Path) -> Result<(), TokenError> {
-        let path = fallback_path(settings_dir);
-        match std::fs::remove_file(&path) {
+    /// `settings_dir` は設定ファイル (`settings.json`) と同じディレクトリ。
+    pub fn get(settings_dir: &Path) -> Result<Option<String>, TokenError> {
+        match std::fs::read_to_string(token_path(settings_dir)) {
+            Ok(raw) => {
+                let trimmed = raw.trim();
+                Ok(if trimmed.is_empty() { None } else { Some(trimmed.to_string()) })
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(TokenError::FileRead(e)),
+        }
+    }
+
+    pub fn set(settings_dir: &Path, token: &str) -> Result<(), TokenError> {
+        let path = token_path(settings_dir);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(TokenError::FileWrite)?;
+        }
+        std::fs::write(&path, token).map_err(TokenError::FileWrite)?;
+        restrict_to_owner(&path);
+        Ok(())
+    }
+
+    pub fn delete(settings_dir: &Path) -> Result<(), TokenError> {
+        match std::fs::remove_file(token_path(settings_dir)) {
             Ok(()) => Ok(()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(e) => Err(TokenError::FileWrite(e)),
         }
     }
 
-    /// `settings_dir` は設定ファイル (`settings.json`) と同じディレクトリ (フォールバック用)。
-    /// keyring アクセスが失敗した場合は理由を warn ログに出し、フォールバックファイルを試す。
-    pub fn get(settings_dir: &Path) -> Result<Option<String>, TokenError> {
-        let keyring_result = entry().and_then(|e| match e.get_password() {
-            Ok(token) => Ok(Some(token)),
-            Err(keyring::Error::NoEntry) => Ok(None),
-            Err(err) => Err(err.into()),
-        });
-        match keyring_result {
-            Ok(v) => Ok(v),
-            Err(e) => {
-                tracing::warn!(
-                    "keyring からのトークン取得に失敗: {e}。設定ディレクトリのフォールバックファイルを試す"
-                );
-                read_fallback(settings_dir)
-            }
-        }
-    }
+    #[cfg(test)]
+    mod tests {
+        use super::*;
 
-    pub fn set(settings_dir: &Path, token: &str) -> Result<(), TokenError> {
-        let keyring_result = entry().and_then(|e| e.set_password(token).map_err(Into::into));
-        match keyring_result {
-            Ok(()) => Ok(()),
-            Err(e) => {
-                tracing::warn!(
-                    "keyring へのトークン保存に失敗: {e}。設定ディレクトリへフォールバックファイル (0600) として保存する"
-                );
-                write_fallback(settings_dir, token)
+        #[test]
+        fn set_get_delete_round_trip() {
+            let dir = tempfile::tempdir().expect("tempdir");
+            assert_eq!(get(dir.path()).unwrap(), None);
+            set(dir.path(), "abc").unwrap();
+            assert_eq!(get(dir.path()).unwrap(), Some("abc".to_string()));
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mode = std::fs::metadata(dir.path().join("token")).unwrap().permissions().mode();
+                assert_eq!(mode & 0o777, 0o600);
             }
+            delete(dir.path()).unwrap();
+            assert_eq!(get(dir.path()).unwrap(), None);
+            delete(dir.path()).unwrap(); // 2 回目も成功
         }
-    }
-
-    pub fn delete(settings_dir: &Path) -> Result<(), TokenError> {
-        let keyring_result = entry().and_then(|e| match e.delete_credential() {
-            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-            Err(err) => Err(err.into()),
-        });
-        if let Err(e) = &keyring_result {
-            tracing::warn!("keyring からのトークン削除に失敗: {e}");
-        }
-        // フォールバックファイルが残っていれば (keyring 利用時でも過去にフォールバックへ
-        // 書いた形跡があれば) 一緒に削除する。
-        delete_fallback(settings_dir)?;
-        keyring_result
     }
 }
 

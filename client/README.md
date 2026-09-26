@@ -14,7 +14,7 @@ client/
 │   │   ├── audio/       cpal 録音 → rubato で 16kHz mono PCM16LE、100ms チャンク、300ms プリロール、RMS
 │   │   ├── state/       発話の状態機械 (押下/解放/Esc/final/エラー、発話順キュー、リピート押下無視)
 │   │   ├── insert/      クリップボード貼り付け・直接送出、前面アプリ一致判定、復元判定
-│   │   ├── settings/    設定の JSON 永続化、トークンの keyring 保存 (フォールバック付き)、履歴 (直近20件)
+│   │   ├── settings/    設定の JSON 永続化、トークンのファイル保存 (0600)、履歴 (直近20件)
 │   │   ├── status/      React 側と共有する `Status` の一元管理 (`voice://status`)
 │   │   ├── accessibility/  macOS アクセシビリティ権限の確認・誘導
 │   │   ├── overlay/     状態表示オーバーレイウィンドウ
@@ -66,12 +66,11 @@ React 側が `voice://status` の `paired: true` を見て隠せる想定)。サ
 サーバーを変更したときは `repair(server_url)` コマンドでトークンとフィンガープリントを捨てて
 TOFU からやり直せる (UI 契約)。
 
-### トークン保存のフォールバック
+### トークンの保存先
 
-macOS の ad-hoc 署名アプリでは keychain アクセスが OS に拒否される事例があるため、keyring への
-読み書きが失敗したら理由を warn ログに出したうえで、設定ファイル (`settings.json`) と同じ
-ディレクトリの `token` ファイル (権限 0600、ファイル所有者のみ読み書き可) へ自動的にフォールバック
-する (`settings::token`)。
+設定ファイル (`settings.json`) と同じディレクトリの `token` ファイル (権限 0600、所有者のみ読み書き可)。
+keychain は使わない: ad-hoc 署名の .app はビルドごとに別アプリ扱いになり、macOS の keychain が毎回
+確認ダイアログを出す・既存項目を更新できないことを実機で確認したため (`settings::token` の DECISION)。
 
 ## macOS の権限
 

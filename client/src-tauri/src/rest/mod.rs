@@ -307,12 +307,27 @@ mod tests {
             let (tcp, _) = listener.accept().await.expect("accept");
             let mut tls = acceptor.accept(tcp).await.expect("tls accept");
 
+            // ヘッダー末尾で止めるとボディが別レコードで届いたときに検証が空振りするので、
+            // Content-Length 分まで読み切る。
             let mut raw = Vec::new();
+            let mut body_end: Option<usize> = None;
             loop {
                 let mut chunk = [0u8; 4096];
                 let n = tls.read(&mut chunk).await.expect("読み取り");
+                assert!(n > 0, "リクエストが途中で切れた");
                 raw.extend_from_slice(&chunk[..n]);
-                if raw.windows(4).any(|w| w == b"\r\n\r\n") {
+                if body_end.is_none() {
+                    if let Some(pos) = raw.windows(4).position(|w| w == b"\r\n\r\n") {
+                        let head = String::from_utf8_lossy(&raw[..pos]).to_ascii_lowercase();
+                        let len = head
+                            .lines()
+                            .find_map(|l| l.strip_prefix("content-length:"))
+                            .and_then(|v| v.trim().parse::<usize>().ok())
+                            .expect("Content-Length が無い");
+                        body_end = Some(pos + 4 + len);
+                    }
+                }
+                if body_end.is_some_and(|end| raw.len() >= end) {
                     break;
                 }
             }

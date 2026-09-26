@@ -83,7 +83,7 @@ pub async fn approve_fingerprint(
 }
 
 /// 未ペアリング判定用 (React 起動時、設定画面先頭のペアリングカードの表示条件)。
-/// keyring アクセス自体が失敗した場合もエラーにせず「未ペアリング」として扱う
+/// トークンファイルの読み込み自体が失敗した場合もエラーにせず「未ペアリング」として扱う
 /// (安全側 = ペアリングカードを出すだけで、既存の接続や辞書アクセスを止めるわけではない)。
 #[tauri::command]
 pub async fn has_token(app: tauri::AppHandle) -> Result<bool, String> {
@@ -98,7 +98,7 @@ pub async fn has_token(app: tauri::AppHandle) -> Result<bool, String> {
 }
 
 /// [`pair`] コマンドの成功応答。React 側の表示用にフィンガープリントだけを返す
-/// (トークンは keyring (またはフォールバックファイル) に保存済みで、React 側が保持する必要はない)。
+/// (トークンはファイル (0600) に保存済みで、React 側が保持する必要はない)。
 #[derive(Debug, Clone, Serialize)]
 pub struct PairOutcome {
     pub fingerprint_hex: String,
@@ -141,9 +141,9 @@ fn verify_pair_fingerprint(probed_fingerprint_hex: &str, response_fingerprint: &
     Ok(probed)
 }
 
-/// [`pair`] コマンド本体のうち、設定・keyring への書き込みを含まない部分
+/// [`pair`] コマンド本体のうち、設定・トークンファイルへの書き込みを含まない部分
 /// (手順 a: TOFU でフィンガープリントを取得 → b: その TLS で `POST /v1/pair` → c: 応答の
-/// フィンガープリントが a と一致することを検証)。keyring へ書き込む手順 d は副作用が大きく
+/// フィンガープリントが a と一致することを検証)。トークンファイルへ書き込む手順 d は副作用が大きく
 /// (実際の OS キーチェーンを変更してしまう) テストしにくいため、ここでは分離して
 /// モック TLS サーバーだけで検証できるようにしている。
 ///
@@ -171,7 +171,7 @@ async fn pair_and_verify(
 
 /// ペアリング本体: (a) TOFU でフィンガープリントを取得 → (b) そのフィンガープリントで固定した
 /// TLS で `POST /v1/pair` → (c) 応答のフィンガープリントが (a) と一致することを検証 →
-/// (d) token を keyring (失敗時はフォールバックファイル)、fingerprint と server_url を設定へ保存する。
+/// (d) token をファイル (0600)、fingerprint と server_url を設定へ保存する。
 /// `device_name` を省略した場合はホスト名から既定値を作る。
 ///
 /// [`pair`] (手動/UI 契約コマンド) と、起動時の自動ペアリング (`lib.rs`) の両方から呼ばれる
@@ -360,7 +360,7 @@ mod tests {
         assert!(!err.is_empty());
     }
 
-    /// `pair` コマンド本体のうち settings/keyring への書き込みを含まない部分
+    /// `pair` コマンド本体のうち settings/トークンファイルへの書き込みを含まない部分
     /// (a: TOFU 取得 → b: `POST /v1/pair` → c: フィンガープリント一致検証) が、
     /// ローカルの TLS モックサーバー越しに一連の流れとして通ることを確認する結合テスト。
     /// サーバーが code 不要 (`code: None`) の運用になったことを前提に検証する。

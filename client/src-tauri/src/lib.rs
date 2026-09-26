@@ -7,7 +7,7 @@
 //! - [`audio`][]: 録音・リサンプリング・チャンク分割・RMS
 //! - [`state`][]: 発話の状態機械
 //! - [`insert`][]: クリップボード貼り付け・直接送出
-//! - [`settings`][]: 設定の永続化・トークンの keyring 保存 (フォールバック付き)・履歴
+//! - [`settings`][]: 設定の永続化・トークンのファイル保存 (0600)・履歴
 //! - [`status`][]: React 側と共有する `Status` の一元管理 (`voice://status`)
 //! - [`accessibility`][]: macOS アクセシビリティ権限の確認
 //! - [`overlay`][]: 状態表示オーバーレイウィンドウ
@@ -123,7 +123,7 @@ pub fn run() {
             let loaded = settings::load(&path).unwrap_or_default();
             let dir = config_dir(&handle);
 
-            // 未ペアリング (トークン未保存) 判定。keyring アクセス自体が失敗した場合も
+            // 未ペアリング (トークン未保存) 判定。トークンファイルの読み込み自体が失敗した場合も
             // 安全側 (未ペアリング扱い) にする。
             let paired = match settings::token::get(&dir) {
                 Ok(token) => token.is_some(),
@@ -290,11 +290,13 @@ async fn run_connection_forever(
                 None
             }
         };
-        if token.is_none() {
-            tracing::warn!("トークンが未設定。設定画面で保存すると次の接続試行から使われる");
-        }
+        let Some(token) = token else {
+            // 自動ペアリング (auto_pair_forever) の完了を待つ。401 で無駄に叩かない
+            tokio::time::sleep(SETTINGS_RECHECK_INTERVAL).await;
+            continue;
+        };
 
-        match connect_once(&host, port, &fingerprint, token.as_deref()).await {
+        match connect_once(&host, port, &fingerprint, Some(&token)).await {
             Ok(ws_stream) => {
                 tracing::info!("サーバーに接続した ({host}:{port})");
                 backoff = std::time::Duration::from_secs(1);
