@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://textrans.local/protocol/v1/start.schema.json",
+  "title": "start (C→S)",
+  "description": "発話開始。これ以降のバイナリフレーム (PCM16LE/16kHz/mono) はこのセッションに属する。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["type", "session_id", "protocol_version", "mode", "sample_rate"],
+  "properties": {
+    "type": { "const": "start" },
+    "session_id": { "$ref": "common.schema.json#/$defs/session_id" },
+    "protocol_version": { "type": "integer", "minimum": 1 },
+    "mode": { "$ref": "common.schema.json#/$defs/mode" },
+    "sample_rate": { "const": 16000 }
+  }
+}

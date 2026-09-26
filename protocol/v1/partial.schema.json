@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://textrans.local/protocol/v1/partial.schema.json",
+  "title": "partial (S→C)",
+  "description": "セグメント単位の途中結果。表示専用で挿入には使わない。seq は 0 始まりのセグメント番号。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["type", "session_id", "seq", "text"],
+  "properties": {
+    "type": { "const": "partial" },
+    "session_id": { "$ref": "common.schema.json#/$defs/session_id" },
+    "seq": { "type": "integer", "minimum": 0 },
+    "text": { "type": "string" }
+  }
+}

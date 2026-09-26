@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://textrans.local/protocol/v1/error.schema.json",
+  "title": "error (S→C)",
+  "description": "失敗通知。session_id はセッション特定前のエラー (不正 JSON 等) では null。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["type", "session_id", "code", "message", "retryable"],
+  "properties": {
+    "type": { "const": "error" },
+    "session_id": {
+      "oneOf": [{ "$ref": "common.schema.json#/$defs/session_id" }, { "type": "null" }]
+    },
+    "code": {
+      "enum": ["too_long", "busy", "unsupported_version", "invalid_message", "unknown_session", "internal"],
+      "description": "too_long: 120 秒超過 / busy: キュー満杯 (retryable) / unsupported_version: 版数非対応 (送信後に切断) / invalid_message: スキーマ違反・不正フレーム / unknown_session: 不明または終了済みセッション宛て / internal: サーバー内部エラー"
+    },
+    "message": { "type": "string" },
+    "retryable": { "type": "boolean" }
+  }
+}

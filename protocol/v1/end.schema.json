@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://textrans.local/protocol/v1/end.schema.json",
+  "title": "end (C→S)",
+  "description": "発話終了。これ以降の音声は受け付けない。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["type", "session_id"],
+  "properties": {
+    "type": { "const": "end" },
+    "session_id": { "$ref": "common.schema.json#/$defs/session_id" }
+  }
+}

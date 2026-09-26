@@ -1,0 +1,10 @@
+# 辞書サンプル (設計書 §4.4)。protocol/v1/dictionary.schema.json と同形。
+# 正本はサーバー側の dictionary.yaml。クライアントは GET/PUT /v1/dictionary で編集する。
+terms:
+  - surface: "Kubernetes"
+    aliases: ["クバネティス", "クーベネティス"]
+    replace: true   # 完全一致で機械的に置換する
+
+  - surface: "Meta"
+    aliases: ["メタ"]
+    replace: false  # 一般語 (メタデータ等) と衝突するため LLM に文脈で判断させる

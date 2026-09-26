@@ -1,0 +1,19 @@
+# secrets / 実設定
+server.yaml
+tokens.yaml
+tls/
+.env
+# 音声データ
+bench/data/
+*.wav
+# build
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+node_modules/
+client/src-tauri/target/
+client/dist/
+target/
+client/src-tauri/gen/schemas/

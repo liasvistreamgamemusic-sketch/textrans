@@ -1,0 +1,12 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "voice-client の全ウィンドウに対する既定権限 (設定画面・辞書エディタ・オーバーレイ)",
+  "windows": ["main", "voice-overlay"],
+  "permissions": [
+    "core:default",
+    "core:event:default",
+    "core:window:allow-show",
+    "core:window:allow-hide"
+  ]
+}

@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://textrans.local/protocol/v1/final.schema.json",
+  "title": "final (S→C)",
+  "description": "最終結果。text が空文字なら挿入しない。raw_text は辞書の確定置換まで適用した ASR 結果。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["type", "session_id", "raw_text", "text", "mode", "flags", "timings"],
+  "properties": {
+    "type": { "const": "final" },
+    "session_id": { "$ref": "common.schema.json#/$defs/session_id" },
+    "raw_text": { "type": "string" },
+    "text": { "type": "string" },
+    "mode": { "$ref": "common.schema.json#/$defs/mode" },
+    "flags": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "enum": ["llm_skipped", "llm_rejected"] }
+    },
+    "timings": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["asr_ms", "llm_ms", "total_ms"],
+      "properties": {
+        "asr_ms": { "type": "integer", "minimum": 0 },
+        "llm_ms": { "type": "integer", "minimum": 0 },
+        "total_ms": { "type": "integer", "minimum": 0 }
+      }
+    }
+  }
+}

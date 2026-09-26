@@ -1,0 +1,49 @@
+# voice-server 設定サンプル (設計書 §4)。
+# 実運用では ~/voice/config/server.yaml へ複製して編集する (git 管理外、.gitignore 済み)。
+# 値は設計書 §4 の既定値、および実機 (Linux-Desktop01) での動作確認済みの値。
+
+server:
+  bind: "0.0.0.0"          # LAN 内のみに ufw で絞る (server/deploy 側の責務)
+  port: 8765
+  tls_cert_path: "~/voice/config/tls/server.crt"
+  tls_key_path: "~/voice/config/tls/server.key"
+
+tokens:
+  path: "~/voice/config/tokens.yaml"   # SHA-256 ハッシュのみを保存 (0600)
+
+dictionary:
+  path: "~/voice/config/dictionary.yaml"
+
+asr:
+  backend: "faster_whisper"   # 初版の既定 (設計書 §4.2, §6.1)。実機確認済み
+  model: "large-v3-turbo"
+  model_path: null            # 指定すればローカルパス優先。未指定なら HF ID として取得
+  strategy: "segmented"       # segmented (既定) / whole。bench で確定させる
+  context_chars: 100           # 前セグメント末尾の文字数を次の文脈として渡す
+  compute_type: "float16"      # RTX 2070 SUPER (Turing) は BF16 非対応
+  device: "cuda"
+
+vad:
+  silence_ms: 600
+  max_segment_s: 15
+  min_segment_s: 1
+
+llm:
+  base_url: "http://127.0.0.1:8081"   # llama-server (127.0.0.1 のみ bind、実機確認済み)
+  timeout_base_ms: 1500
+  timeout_per_char_ms: 15
+  temperature: 0.1                     # 0 〜 0.2 の範囲
+  model: "Qwen3.5-4B-Q4_K_M.gguf"       # 実機確認済み (--reasoning-budget 0 -rea off で起動)
+
+limits:
+  max_utterance_s: 120
+  queue_size: 2                       # 同時受理数は queue_size + 1 (処理中1件 + キュー)
+  end_grace_s: 5
+  max_dictionary_body_bytes: 1048576  # PUT /v1/dictionary の本文サイズ上限 (超過は413)
+
+recording:
+  enabled: false            # bench 用録音。明示的に有効化したときだけ書く
+  dir: "~/voice/data"
+
+logging:
+  level: "INFO"             # 処理時間・モデル名・フラグのみ記録。本文は出さない

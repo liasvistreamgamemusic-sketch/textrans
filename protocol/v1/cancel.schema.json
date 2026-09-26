@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://textrans.local/protocol/v1/cancel.schema.json",
+  "title": "cancel (C→S)",
+  "description": "破棄。サーバーは処理を中断して何も返さない。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["type", "session_id"],
+  "properties": {
+    "type": { "const": "cancel" },
+    "session_id": { "$ref": "common.schema.json#/$defs/session_id" }
+  }
+}

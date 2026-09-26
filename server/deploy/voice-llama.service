@@ -1,0 +1,31 @@
+[Unit]
+Description=Voice input system - llama.cpp server (Qwen3.5-4B, %h/voice/models)
+# ネットワークはローカルloopbackへのbindのみで外部への依存はないが、
+# ディスク(/home)がマウントされてから起動するのが安全なため network.target を待つ。
+After=network.target
+
+[Service]
+Type=simple
+# 実機確認 (2026-09-26): --reasoning-budget 0 だけでは <think> の内容が
+# reasoning_content に漏れて max_tokens を使い切ることがあった。
+# -rea off を併用すると思考タグが混ざらず content に直接清書結果が入る。
+# -fa on: 実測でVRAMがoffより僅かに少なく(3211MiB vs 3346MiB)、速度差はほぼ無し。
+#
+# このファイルは setup.sh がテンプレートとして読み、@@..@@ を deploy.env の値で
+# 置換したものを ~/.config/systemd/user/ に配置する(値はここでハードコードしない)。
+ExecStart=%h/Apps/llama.cpp/build/bin/llama-server \
+    -m %h/voice/models/@@LLM_MODEL_FILE@@ \
+    --host @@LLAMA_HOST@@ \
+    --port @@LLAMA_PORT@@ \
+    -ngl @@LLAMA_NGL@@ \
+    -c @@LLAMA_CTX_SIZE@@ \
+    --reasoning-budget 0 \
+    -rea off \
+    -fa @@LLAMA_FLASH_ATTN@@
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

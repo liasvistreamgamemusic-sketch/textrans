@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://textrans.local/protocol/v1/dictionary.schema.json",
+  "title": "辞書 (GET/PUT /v1/dictionary の本文、server/config/dictionary.yaml と同形)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["terms"],
+  "properties": {
+    "terms": {
+      "type": "array",
+      "maxItems": 5000,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["surface"],
+        "properties": {
+          "surface": { "type": "string", "minLength": 1, "maxLength": 100 },
+          "aliases": {
+            "type": "array",
+            "maxItems": 50,
+            "items": { "type": "string", "minLength": 1, "maxLength": 100 },
+            "default": []
+          },
+          "replace": { "type": "boolean", "default": false }
+        }
+      }
+    }
+  }
+}

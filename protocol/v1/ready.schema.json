@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://textrans.local/protocol/v1/ready.schema.json",
+  "title": "ready (S→C)",
+  "description": "start の受付完了。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["type", "session_id"],
+  "properties": {
+    "type": { "const": "ready" },
+    "session_id": { "$ref": "common.schema.json#/$defs/session_id" }
+  }
+}

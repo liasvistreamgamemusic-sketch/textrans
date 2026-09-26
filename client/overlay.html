@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <title>voice-client overlay</title>
+    <style>
+      html, body {
+        margin: 0;
+        padding: 0;
+        background: transparent;
+        overflow: hidden;
+        font-family: -apple-system, "Segoe UI", sans-serif;
+      }
+      #pill {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin: 4px;
+        padding: 10px 14px;
+        border-radius: 12px;
+        background: rgba(20, 20, 20, 0.85);
+        color: #fff;
+        font-size: 13px;
+      }
+      #dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: #4caf50;
+      }
+      #pill.processing #dot {
+        background: #ffb300;
+      }
+      #pill.failed #dot {
+        background: #e53935;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="pill" class="recording">
+      <span id="dot"></span>
+      <span id="label">録音中</span>
+    </div>
+    <script type="module">
+      import { listen } from "@tauri-apps/api/event";
+
+      const pill = document.getElementById("pill");
+      const label = document.getElementById("label");
+
+      const labels = {
+        recording: "録音中",
+        processing: "処理中",
+        failed: "失敗",
+      };
+
+      listen("voice-overlay://status", (event) => {
+        const status = String(event.payload);
+        pill.className = status;
+        label.textContent = labels[status] ?? status;
+      });
+    </script>
+  </body>
+</html>

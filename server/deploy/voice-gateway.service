@@ -1,0 +1,17 @@
+[Unit]
+Description=Voice input system - gateway (FastAPI/uvicorn, %h/voice/app)
+After=network.target voice-llama.service
+# voice-llama が未準備でも起動する(design.md §4.8: /healthz が llm:false を返す)。
+# 起動順序の保証だけが目的なので Requires= ではなく After= のみを指定する。
+
+[Service]
+Type=simple
+WorkingDirectory=%h/voice/app
+ExecStart=%h/voice/app/.venv/bin/voice-server serve --config %h/voice/config/server.yaml
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
