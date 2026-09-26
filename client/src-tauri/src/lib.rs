@@ -52,8 +52,13 @@ fn default_shortcut() -> Shortcut {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // RUST_LOG 未設定時の既定は info (from_default_env だと error のみになり、
+    // 「未承認のため接続しない」「接続に失敗」等の warn が見えなかった)。
     tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
         .init();
 
     let outgoing = PendingQueue::new();
@@ -124,11 +129,8 @@ pub fn run() {
                 }
             });
 
-            // 常時接続 (design.md §3.1)。フィンガープリント未承認の間は接続を試みない。
-            let ws_settings = {
-                let state = app.state::<AppState>();
-                tauri::async_runtime::block_on(async { state.settings.lock().await.clone() })
-            };
+            // 常時接続 (design.md §3.1)。設定スロットを共有し、承認・変更を再起動なしで拾う。
+            let ws_settings = app.state::<AppState>().settings.clone();
             tauri::async_runtime::spawn(run_connection_forever(ws_settings, outgoing, incoming_tx));
 
             Ok(())
@@ -137,31 +139,48 @@ pub fn run() {
         .expect("tauri アプリケーションの起動に失敗");
 }
 
-/// 常時接続の再接続ループ。フィンガープリント未承認 (`server_fingerprint_hex: None`) の間は
-/// 接続を試みず待機する (初回接続の承認 UI は React 側、design.md §5.8)。
+/// 承認待ちや設定不備のときに設定を読み直すまでの間隔。
+const SETTINGS_RECHECK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// 常時接続の再接続ループ。設定 (URL・フィンガープリント・トークン) は接続を試みるたびに
+/// 共有スロットから読み直すので、設定画面で承認・変更した内容は再起動なしで反映される。
+/// フィンガープリント未承認 (`server_fingerprint_hex: None`) の間は接続を試みず待機する
+/// (初回接続の承認 UI は React 側、design.md §5.8)。
 async fn run_connection_forever(
-    settings: Settings,
+    settings: Arc<Mutex<Settings>>,
     outgoing: PendingQueue,
     incoming_tx: mpsc::UnboundedSender<protocol::ServerMessage>,
 ) {
-    let Some(fingerprint) = settings.server_fingerprint_hex.clone() else {
-        tracing::warn!("証明書フィンガープリント未承認のため、常時接続は開始しない");
-        return;
-    };
-    let Ok((host, port)) = rest::host_and_port(&settings.server_url) else {
-        tracing::error!("サーバー URL を解釈できない: {}", settings.server_url);
-        return;
-    };
-    let token = settings::token::get().ok().flatten();
-
     let mut backoff = std::time::Duration::from_secs(1);
     const MAX_BACKOFF: std::time::Duration = std::time::Duration::from_secs(30);
+    let mut announced_waiting = false;
 
     // `outgoing` (PendingQueue) は接続の有無に関わらず常に同じインスタンスを使う。
     // 未接続の間もキャップ付きで溜まり続け、再接続後は先頭 (古い方) から送信される。
     loop {
+        let current = settings.lock().await.clone();
+        let Some(fingerprint) = current.server_fingerprint_hex.clone() else {
+            if !announced_waiting {
+                tracing::warn!("証明書フィンガープリント未承認のため接続しない。設定画面で承認すると自動で接続する");
+                announced_waiting = true;
+            }
+            tokio::time::sleep(SETTINGS_RECHECK_INTERVAL).await;
+            continue;
+        };
+        announced_waiting = false;
+        let Ok((host, port)) = rest::host_and_port(&current.server_url) else {
+            tracing::error!("サーバー URL を解釈できない: {}", current.server_url);
+            tokio::time::sleep(SETTINGS_RECHECK_INTERVAL).await;
+            continue;
+        };
+        let token = settings::token::get().ok().flatten();
+        if token.is_none() {
+            tracing::warn!("トークンが未設定。設定画面で保存すると次の接続試行から使われる");
+        }
+
         match connect_once(&host, port, &fingerprint, token.as_deref()).await {
             Ok(ws_stream) => {
+                tracing::info!("サーバーに接続した ({host}:{port})");
                 backoff = std::time::Duration::from_secs(1);
                 if let Err(e) = ws::drive_connection(ws_stream, &outgoing, &incoming_tx).await {
                     tracing::warn!("WebSocket 接続が切れた: {e}");
