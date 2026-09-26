@@ -231,7 +231,9 @@ pub fn open_input_stream(
     let mut mono_carry: Vec<f32> = Vec::with_capacity(input_frames_per_call * 2);
     let mut chunker = ChunkAccumulator::new();
 
-    let error_callback = |err| tracing::error!("cpal 入力ストリームエラー: {err}");
+    // ストリーム開始直後の 1 回きりの overrun は CoreAudio で通常発生し、以後の音声は届く。
+    // 継続して出る場合だけ問題 (コールバックが遅い / デバイス切断) なので warn に留める。
+    let error_callback = |err| tracing::warn!("cpal 入力ストリームの通知 (単発なら無害): {err}");
 
     let stream = device
         .build_input_stream(
