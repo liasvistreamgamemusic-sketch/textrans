@@ -5309,6 +5309,7 @@ dependencies = [
  "cpal",
  "enigo",
  "futures-util",
+ "gethostname",
  "keyring",
  "objc2",
  "objc2-app-kit",

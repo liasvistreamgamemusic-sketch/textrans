@@ -10,6 +10,7 @@ import uvicorn
 from .app import create_app
 from .auth import TokenStore
 from .config import ServerConfig
+from .pairing import PairingStore
 from .tls import ensure_certificate
 from .tls import fingerprint as compute_fingerprint
 
@@ -20,6 +21,7 @@ app.add_typer(token_app, name="token")
 app.add_typer(cert_app, name="cert")
 
 _DEFAULT_CONFIG_PATH = Path("config/server.yaml")
+_DEFAULT_PAIR_TTL_S = 300
 
 
 @app.command()
@@ -35,6 +37,19 @@ def serve(config: Path = typer.Option(_DEFAULT_CONFIG_PATH, "--config", help="se
         ssl_certfile=str(cfg.server.tls_cert_path),
         ssl_keyfile=str(cfg.server.tls_key_path),
     )
+
+
+@app.command()
+def pair(
+    config: Path = typer.Option(_DEFAULT_CONFIG_PATH, "--config", help="server.yaml のパス"),
+    ttl: int = typer.Option(_DEFAULT_PAIR_TTL_S, "--ttl", help="コードの有効期限 (秒)"),
+) -> None:
+    """ペアリング用の6桁コードを生成する。平文コードと有効期限をこの1回だけ表示する。"""
+    cfg = ServerConfig.load(config)
+    pairing_code = PairingStore(cfg.pairing.path).issue(ttl)
+    typer.echo(f"code={pairing_code.code}")
+    typer.echo(f"expires_at={pairing_code.expires_at.isoformat()}")
+    typer.echo("このコードは端末側で1回だけ入力できます。クライアントでペアリングを行ってください。")
 
 
 @token_app.command("issue")

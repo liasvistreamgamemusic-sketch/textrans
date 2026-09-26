@@ -51,39 +51,46 @@ export default function FingerprintApproval() {
 
   return (
     <section>
-      <h2>サーバー証明書の承認</h2>
+      <h2>サーバー証明書 (上級者向け・手動)</h2>
       <p>
-        自宅LAN内の自己署名証明書のため、初回だけ手動で確認します。サーバー側で
-        <code>voice-server cert fingerprint</code> を実行した結果と、下のボタンで取得した値が
-        一致することを確認してから承認してください。
+        通常は設定画面の「ペアリング」で証明書の確認からトークン発行まで自動的に行われます。
+        ペアリングが使えない場合や、証明書だけを個別に確認・差し替えたい場合にだけ以下を使ってください。
       </p>
-      <button onClick={handleProbe}>サーバーに接続してフィンガープリントを取得</button>
-      {probed && (
-        <div>
-          <p>
-            取得した値: <code>{probed}</code>
-          </p>
-          <button onClick={handleApprove}>この値を承認する</button>
-        </div>
-      )}
+      <details>
+        <summary>手動でフィンガープリントを承認する</summary>
+        <p>
+          自宅LAN内の自己署名証明書のため、初回だけ手動で確認します。サーバー側で
+          <code>voice-server cert fingerprint</code> を実行した結果と、下のボタンで取得した値が
+          一致することを確認してから承認してください。
+        </p>
+        <button onClick={handleProbe}>サーバーに接続してフィンガープリントを取得</button>
+        {probed && (
+          <div>
+            <p>
+              取得した値: <code>{probed}</code>
+            </p>
+            <button onClick={handleApprove}>この値を承認する</button>
+          </div>
+        )}
 
-      <hr />
-      <h3>手動入力で承認する</h3>
-      <p>
-        <code>voice-server cert fingerprint</code> の出力 (コロン区切り・大文字でも構わない) を
-        そのまま貼り付けてください。
-      </p>
-      <label>
-        <input
-          type="text"
-          value={manualInput}
-          onChange={(e) => setManualInput(e.target.value)}
-          placeholder="8C:4D:17:...:88 または 8c4d17...88"
-        />
-      </label>
-      <button onClick={handleApproveManualInput}>この入力を承認する</button>
+        <hr />
+        <h3>手動入力で承認する</h3>
+        <p>
+          <code>voice-server cert fingerprint</code> の出力 (コロン区切り・大文字でも構わない) を
+          そのまま貼り付けてください。
+        </p>
+        <label>
+          <input
+            type="text"
+            value={manualInput}
+            onChange={(e) => setManualInput(e.target.value)}
+            placeholder="8C:4D:17:...:88 または 8c4d17...88"
+          />
+        </label>
+        <button onClick={handleApproveManualInput}>この入力を承認する</button>
 
-      <p role="status">{status}</p>
+        <p role="status">{status}</p>
+      </details>
     </section>
   );
 }

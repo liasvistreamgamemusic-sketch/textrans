@@ -27,3 +27,8 @@ export interface DictionaryTerm {
 export interface Dictionary {
   terms: DictionaryTerm[];
 }
+
+// `pair` コマンド (src-tauri/src/commands.rs) の応答。
+export interface PairOutcome {
+  fingerprint_hex: string;
+}

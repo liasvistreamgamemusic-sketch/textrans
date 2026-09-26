@@ -40,6 +40,10 @@ class DictionarySection(_PathSection):
     path: Path = Path("~/voice/config/dictionary.yaml").expanduser()
 
 
+class PairingSection(_PathSection):
+    path: Path = Path("~/voice/config/pairing.yaml").expanduser()
+
+
 class AsrSection(_PathSection):
     backend: Literal["faster_whisper", "qwen3_asr", "cohere_transcribe", "dummy"] = "faster_whisper"
     model: str = "large-v3-turbo"
@@ -71,6 +75,7 @@ class LimitsSection(BaseModel):
     queue_size: int = 2
     end_grace_s: int = 5
     max_dictionary_body_bytes: int = 1_048_576
+    pair_failure_delay_s: float = 1.0
 
 
 class RecordingSection(_PathSection):
@@ -90,6 +95,7 @@ class ServerConfig(BaseSettings):
     server: ServerSection = Field(default_factory=ServerSection)
     tokens: TokensSection = Field(default_factory=TokensSection)
     dictionary: DictionarySection = Field(default_factory=DictionarySection)
+    pairing: PairingSection = Field(default_factory=PairingSection)
     asr: AsrSection = Field(default_factory=AsrSection)
     vad: VadSection = Field(default_factory=VadSection)
     llm: LlmSection = Field(default_factory=LlmSection)

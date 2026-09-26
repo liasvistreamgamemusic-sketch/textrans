@@ -14,6 +14,9 @@ tokens:
 dictionary:
   path: "~/voice/config/dictionary.yaml"
 
+pairing:
+  path: "~/voice/config/pairing.yaml"   # `voice-server pair` が書く6桁コードのハッシュ + 有効期限 (0600)
+
 asr:
   backend: "faster_whisper"   # 初版の既定 (設計書 §4.2, §6.1)。実機確認済み
   model: "large-v3-turbo"
@@ -40,6 +43,7 @@ limits:
   queue_size: 2                       # 同時受理数は queue_size + 1 (処理中1件 + キュー)
   end_grace_s: 5
   max_dictionary_body_bytes: 1048576  # PUT /v1/dictionary の本文サイズ上限 (超過は413)
+  pair_failure_delay_s: 1.0           # POST /v1/pair 失敗時のスリープ秒数 (総当たり抑止)
 
 recording:
   enabled: false            # bench 用録音。明示的に有効化したときだけ書く

@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use rustls::pki_types::ServerName;
 use rustls::ClientConfig;
+use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio_rustls::TlsConnector;
@@ -105,19 +106,24 @@ async fn connect_tls(
         .map_err(|e| RestError::Tls(std::io::Error::other(e)))
 }
 
+/// `/v1/dictionary` に加えて `/v1/pair` もこの関数を経由する。`path` はエンドポイントの
+/// 絶対パス、`token` は `Authorization: Bearer` を付けるかどうか (`/v1/pair` は無認証、design.md
+/// 上のサーバー契約通り)。
 async fn request(
     host: &str,
     port: u16,
     fingerprint_hex: &str,
-    token: &str,
     method: &str,
+    path: &str,
+    token: Option<&str>,
     body: Option<&[u8]>,
 ) -> Result<(u16, Vec<u8>), RestError> {
     let mut stream = connect_tls(host, port, fingerprint_hex).await?;
 
-    let mut request = format!(
-        "{method} /v1/dictionary HTTP/1.1\r\nHost: {host}\r\nAuthorization: Bearer {token}\r\nConnection: close\r\n"
-    );
+    let mut request = format!("{method} {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n");
+    if let Some(token) = token {
+        request.push_str(&format!("Authorization: Bearer {token}\r\n"));
+    }
     if let Some(b) = body {
         request.push_str("Content-Type: application/json\r\n");
         request.push_str(&format!("Content-Length: {}\r\n", b.len()));
@@ -143,7 +149,7 @@ pub async fn get_dictionary(
     fingerprint_hex: &str,
     token: &str,
 ) -> Result<Dictionary, RestError> {
-    let (status, body) = request(host, port, fingerprint_hex, token, "GET", None).await?;
+    let (status, body) = request(host, port, fingerprint_hex, "GET", "/v1/dictionary", Some(token), None).await?;
     if status != 200 {
         return Err(RestError::HttpStatus { status });
     }
@@ -158,11 +164,54 @@ pub async fn put_dictionary(
     dictionary: &Dictionary,
 ) -> Result<(), RestError> {
     let body = serde_json::to_vec(dictionary)?;
-    let (status, _) = request(host, port, fingerprint_hex, token, "PUT", Some(&body)).await?;
+    let (status, _) = request(
+        host,
+        port,
+        fingerprint_hex,
+        "PUT",
+        "/v1/dictionary",
+        Some(token),
+        Some(&body),
+    )
+    .await?;
     if status != 200 {
         return Err(RestError::HttpStatus { status });
     }
     Ok(())
+}
+
+#[derive(Debug, Serialize)]
+struct PairRequest<'a> {
+    device: &'a str,
+    code: &'a str,
+}
+
+/// `POST /v1/pair` の成功応答 (サーバー契約: 無認証、成功 200、失敗 403)。
+#[derive(Debug, Clone, Deserialize)]
+pub struct PairResponse {
+    pub device: String,
+    pub token: String,
+    /// コロン区切り・大文字 (例 `8C:4D:...:88`)。呼び出し側で `normalize_fingerprint` を通すこと。
+    pub fingerprint: String,
+}
+
+/// `POST /v1/pair` (無認証)。ペアリングコードと端末名からトークンを発行してもらう
+/// (design.md 上のサーバー契約、実装は `voice-server` 側)。TLS は呼び出し側が TOFU で
+/// 取得したフィンガープリントで固定する — まだ承認済みの値ではないため、応答の
+/// `fingerprint` が同じ値であることを呼び出し側で必ず検証すること。
+pub async fn pair(
+    host: &str,
+    port: u16,
+    fingerprint_hex: &str,
+    device: &str,
+    code: &str,
+) -> Result<PairResponse, RestError> {
+    let body = serde_json::to_vec(&PairRequest { device, code })?;
+    let (status, resp_body) = request(host, port, fingerprint_hex, "POST", "/v1/pair", None, Some(&body)).await?;
+    if status != 200 {
+        return Err(RestError::HttpStatus { status });
+    }
+    Ok(serde_json::from_slice(&resp_body)?)
 }
 
 #[cfg(test)]
@@ -207,5 +256,118 @@ mod tests {
     #[test]
     fn parse_http_response_rejects_missing_header_terminator() {
         assert!(parse_http_response(b"not an http response").is_err());
+    }
+
+    /// `pair` (`POST /v1/pair`) が固定 TLS 越しに送受信できることを、ローカルの TLS
+    /// モックサーバー (`ws::tests` と同様に rcgen の自己署名証明書を使う) で確認する。
+    /// - 送信されたリクエストが無認証 (`Authorization` ヘッダーが無い) であること
+    /// - 応答 (device/token/fingerprint) を正しくデシリアライズできること
+    #[tokio::test]
+    async fn pair_round_trips_over_pinned_tls_without_auth_header() {
+        use rcgen::{generate_simple_self_signed, CertifiedKey};
+        use rustls::pki_types::PrivatePkcs8KeyDer;
+        use rustls::ServerConfig;
+        use tokio::net::TcpListener;
+        use tokio_rustls::TlsAcceptor;
+
+        let CertifiedKey { cert, signing_key } =
+            generate_simple_self_signed(vec!["localhost".to_string()]).expect("自己署名証明書の生成");
+        let cert_der = cert.der().clone();
+        let fingerprint = crate::ws::verifier::fingerprint_hex(&cert_der);
+        let key_der = PrivatePkcs8KeyDer::from(signing_key.serialize_der());
+        let server_config = ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(vec![cert_der.clone()], key_der.into())
+            .expect("サーバー TLS 設定");
+        let acceptor = TlsAcceptor::from(Arc::new(server_config));
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("local_addr");
+
+        let server_task = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.expect("accept");
+            let mut tls = acceptor.accept(tcp).await.expect("tls accept");
+
+            let mut raw = Vec::new();
+            loop {
+                let mut chunk = [0u8; 4096];
+                let n = tls.read(&mut chunk).await.expect("読み取り");
+                raw.extend_from_slice(&chunk[..n]);
+                if raw.windows(4).any(|w| w == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let request_text = String::from_utf8_lossy(&raw).to_string();
+            assert!(request_text.starts_with("POST /v1/pair HTTP/1.1"));
+            assert!(
+                !request_text.to_ascii_lowercase().contains("authorization:"),
+                "/v1/pair は無認証のはずなのに Authorization ヘッダーが付いている: {request_text}"
+            );
+            assert!(request_text.contains("\"device\":\"my-mac\""));
+            assert!(request_text.contains("\"code\":\"123456\""));
+
+            let body = br#"{"device":"my-mac","token":"tok-abc123","fingerprint":"8C:4D:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:88"}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+                body.len()
+            );
+            tls.write_all(response.as_bytes()).await.expect("応答ヘッダー送信");
+            tls.write_all(body).await.expect("応答ボディ送信");
+            tls.shutdown().await.expect("TLS シャットダウン");
+        });
+
+        let response = pair(&addr.ip().to_string(), addr.port(), &fingerprint, "my-mac", "123456")
+            .await
+            .expect("pair が成功すること");
+        assert_eq!(response.device, "my-mac");
+        assert_eq!(response.token, "tok-abc123");
+        assert_eq!(response.fingerprint, "8C:4D:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:88");
+
+        server_task.await.expect("server task panicked");
+    }
+
+    /// サーバーが 403 (コード不正・期限切れ) を返したら `RestError::HttpStatus` になること。
+    #[tokio::test]
+    async fn pair_rejects_403_as_http_status_error() {
+        use rcgen::{generate_simple_self_signed, CertifiedKey};
+        use rustls::pki_types::PrivatePkcs8KeyDer;
+        use rustls::ServerConfig;
+        use tokio::net::TcpListener;
+        use tokio_rustls::TlsAcceptor;
+
+        let CertifiedKey { cert, signing_key } =
+            generate_simple_self_signed(vec!["localhost".to_string()]).expect("自己署名証明書の生成");
+        let cert_der = cert.der().clone();
+        let fingerprint = crate::ws::verifier::fingerprint_hex(&cert_der);
+        let key_der = PrivatePkcs8KeyDer::from(signing_key.serialize_der());
+        let server_config = ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(vec![cert_der.clone()], key_der.into())
+            .expect("サーバー TLS 設定");
+        let acceptor = TlsAcceptor::from(Arc::new(server_config));
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("local_addr");
+
+        let server_task = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.expect("accept");
+            let mut tls = acceptor.accept(tcp).await.expect("tls accept");
+            let mut chunk = [0u8; 4096];
+            let _ = tls.read(&mut chunk).await.expect("読み取り");
+
+            let body = b"{}";
+            let response = format!(
+                "HTTP/1.1 403 Forbidden\r\nContent-Length: {}\r\n\r\n",
+                body.len()
+            );
+            tls.write_all(response.as_bytes()).await.expect("応答ヘッダー送信");
+            tls.write_all(body).await.expect("応答ボディ送信");
+            tls.shutdown().await.expect("TLS シャットダウン");
+        });
+
+        let result = pair(&addr.ip().to_string(), addr.port(), &fingerprint, "my-mac", "000000").await;
+        assert!(matches!(result, Err(RestError::HttpStatus { status: 403 })));
+
+        server_task.await.expect("server task panicked");
     }
 }

@@ -37,8 +37,20 @@ voice-server serve --config ~/voice/config/server.yaml
 | `voice-server token list [--config <path>]` | 発行済み端末名と発行日時を一覧する |
 | `voice-server cert ensure [--config <path>]` | 自己署名証明書が無ければ生成する |
 | `voice-server cert fingerprint [--config <path>]` | 証明書の SHA-256 フィンガープリントを表示する |
+| `voice-server pair [--config <path>] [--ttl <秒>]` | ペアリング用の6桁コードを発行する (既定 TTL 300秒) |
 
 `--config` の既定値は `config/server.yaml` (カレントディレクトリ基準)。
+
+## ペアリング (トークンを手元で `token issue` せずに端末から取得する)
+
+1. Gateway 側で `voice-server pair --config ~/voice/config/server.yaml` を実行する。
+   6桁の数字コードと有効期限が表示される (この1回だけ)。
+2. クライアントでそのコードを入力する。クライアントは無認証で
+   `POST /v1/pair` (`{"device": "<端末名>", "code": "<6桁コード>"}`) を呼び、
+   `{"device", "token", "fingerprint"}` を受け取ってトークンと証明書フィンガープリントを保存する。
+3. コードは成功時に1回だけ使用でき、以後同じコードでの `/v1/pair` は 403 になる
+   (`pairing.yaml` を削除して使い切りにする)。有効期限切れ・コード不一致も同じ 403 で、
+   区別しない (総当たり対策)。失敗時は `limits.pair_failure_delay_s` 秒待ってから応答する。
 
 ## 設定 (`config/server.example.yaml` を複製して編集する)
 
@@ -48,6 +60,7 @@ voice-server serve --config ~/voice/config/server.yaml
 | `server` | `tls_cert_path` / `tls_key_path` | `~/voice/config/tls/server.{crt,key}` | 自己署名証明書 |
 | `tokens` | `path` | `~/voice/config/tokens.yaml` | トークンの SHA-256 ハッシュ保存先 (0600) |
 | `dictionary` | `path` | `~/voice/config/dictionary.yaml` | 辞書の正本 |
+| `pairing` | `path` | `~/voice/config/pairing.yaml` | `voice-server pair` が書くコードのハッシュ + 有効期限 (0600、使い切りで削除) |
 | `asr` | `backend` | `faster_whisper` | `dummy` (テスト用) / `faster_whisper` / (bench候補: 未実装) |
 | `asr` | `model` / `model_path` / `compute_type` / `device` | `large-v3-turbo` / なし / `float16` / `cuda` | ASR モデル |
 | `asr` | `strategy` | `segmented` | `segmented` / `whole` |
@@ -57,7 +70,8 @@ voice-server serve --config ~/voice/config/server.yaml
 | `llm` | `timeout_base_ms` / `timeout_per_char_ms` | `1500` / `15` | タイムアウト計算式 |
 | `llm` | `temperature` / `model` | `0.1` / `Qwen3.5-4B-Q4_K_M.gguf` | 生成パラメータ |
 | `limits` | `max_utterance_s` / `queue_size` / `end_grace_s` | `120` / `2` / `5` | 上限とキュー (同時受理数 = `queue_size + 1`) |
-| `limits` | `max_dictionary_body_bytes` | `1048576` | `PUT /v1/dictionary` の本文サイズ上限 (超過は413) |
+| `limits` | `max_dictionary_body_bytes` | `1048576` | `PUT /v1/dictionary` の本文サイズ上限 (超過は413)。`POST /v1/pair` も流用する |
+| `limits` | `pair_failure_delay_s` | `1.0` | `POST /v1/pair` 失敗時のスリープ秒数 (総当たり抑止) |
 | `recording` | `enabled` / `dir` | `false` / `~/voice/data` | bench 用録音 (既定オフ) |
 | `logging` | `level` | `INFO` | 処理時間・モデル名・フラグのみ記録。本文は出さない |
 

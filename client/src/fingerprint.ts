@@ -20,3 +20,14 @@ export function normalizeFingerprint(input: string): string {
   }
   return cleaned.toLowerCase();
 }
+
+// 表示用: 内部形式 (コロン無し・小文字) を `voice-server cert fingerprint` と同じ
+// コロン区切り・大文字表記に変換する (ペアリング成功時の表示など)。
+export function formatFingerprintColonUppercase(input: string): string {
+  const normalized = normalizeFingerprint(input);
+  const pairs: string[] = [];
+  for (let i = 0; i < normalized.length; i += 2) {
+    pairs.push(normalized.slice(i, i + 2).toUpperCase());
+  }
+  return pairs.join(":");
+}

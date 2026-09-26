@@ -1,9 +1,11 @@
 import { useEffect, useState } from "react";
-import { getSettings, saveSettings } from "../api";
+import { getSettings, hasToken, saveSettings } from "../api";
+import { DEFAULT_SERVER_URL } from "../settingsDefaults";
 import type { Settings } from "../types";
+import PairingCard from "./PairingCard";
 
 const DEFAULT_SETTINGS: Settings = {
-  server_url: "wss://192.168.11.10:8765",
+  server_url: DEFAULT_SERVER_URL,
   server_fingerprint_hex: null,
   hotkey: "Ctrl+Shift+Space",
   operation_mode: "push_to_talk",
@@ -19,13 +21,27 @@ export default function SettingsPanel() {
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
   const [status, setStatus] = useState<string>("");
   const [loading, setLoading] = useState(true);
+  // 起動時に「未ペアリング」かどうかを判定する (実装計画: get_settings + has_token)。
+  // 判定できるまでの間はペアリングカードを出さない (null)。
+  const [paired, setPaired] = useState<boolean | null>(null);
 
   useEffect(() => {
     getSettings()
       .then(setSettings)
       .catch((e) => setStatus(`読み込みに失敗: ${e}`))
       .finally(() => setLoading(false));
+    hasToken()
+      .then((token) => setPaired(token))
+      .catch(() => setPaired(false));
   }, []);
+
+  function handlePaired() {
+    setPaired(true);
+    // ペアリングで保存された server_url / fingerprint を設定画面にも反映する。
+    getSettings()
+      .then(setSettings)
+      .catch((e) => setStatus(`読み込みに失敗: ${e}`));
+  }
 
   async function handleSave() {
     setStatus("保存中…");
@@ -44,6 +60,9 @@ export default function SettingsPanel() {
   return (
     <section>
       <h2>設定</h2>
+      {paired === false && (
+        <PairingCard initialServerUrl={settings.server_url} onPaired={handlePaired} />
+      )}
       <label>
         サーバー URL
         <input

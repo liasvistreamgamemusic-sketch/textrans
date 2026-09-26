@@ -19,6 +19,7 @@ from .config import ServerConfig
 from .dictionary import DictionaryStore
 from .llm_client import LlmClient
 from .logging_utils import setup_logging
+from .pairing import PairingStore
 from .rest import router as rest_router
 from .vad import SileroVadClassifier, VadClassifier
 from .ws import router as ws_router
@@ -56,6 +57,7 @@ class AppState:
     config: ServerConfig
     token_store: TokenStore
     dictionary_store: DictionaryStore
+    pairing_store: PairingStore
     asr_worker: AsrWorker
     vad_classifier: VadClassifier
     cleaner: Cleaner
@@ -87,6 +89,7 @@ def create_app(
         config=config,
         token_store=TokenStore(config.tokens.path),
         dictionary_store=DictionaryStore(config.dictionary.path),
+        pairing_store=PairingStore(config.pairing.path),
         asr_worker=asr_worker,
         vad_classifier=vad_classifier or SileroVadClassifier(),
         cleaner=cleaner,

@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0f1b3d"/>
+      <stop offset="55%" stop-color="#1c2b6b"/>
+      <stop offset="100%" stop-color="#3548a6"/>
+    </linearGradient>
+    <linearGradient id="mic-shine" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.95"/>
+      <stop offset="100%" stop-color="#e7ecff" stop-opacity="0.85"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1024" height="1024" rx="192" fill="url(#bg)"/>
+
+  <!-- マイクのカプセル型ヘッド -->
+  <rect x="422" y="228" width="180" height="320" rx="90" fill="url(#mic-shine)"/>
+
+  <!-- U字ホルダー (ヘッドを囲む集音グリル部分の輪) -->
+  <path
+    d="M 342 460
+       V 512
+       C 342 636 435 738 560 738
+       C 623 738 682 712 726 666
+       C 763 628 682 600 720 560
+       C 700 610 646 670 560 670
+       C 465 670 388 596 388 512
+       V 460
+       Z"
+    fill="none"
+  />
+
+  <path
+    d="M 330 460
+       V 520
+       A 182 182 0 0 0 694 520
+       V 460"
+    fill="none"
+    stroke="url(#mic-shine)"
+    stroke-width="44"
+    stroke-linecap="round"
+  />
+
+  <!-- スタンド -->
+  <rect x="490" y="700" width="44" height="120" rx="22" fill="url(#mic-shine)"/>
+  <rect x="410" y="806" width="204" height="40" rx="20" fill="url(#mic-shine)"/>
+</svg>

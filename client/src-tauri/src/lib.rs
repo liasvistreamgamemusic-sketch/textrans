@@ -93,6 +93,8 @@ pub fn run() {
             commands::put_dictionary,
             commands::probe_fingerprint,
             commands::approve_fingerprint,
+            commands::has_token,
+            commands::pair,
         ])
         .setup(move |app| {
             let handle = app.handle().clone();
@@ -110,6 +112,28 @@ pub fn run() {
             app.global_shortcut().register(default_shortcut())?;
 
             overlay::ensure_overlay_window(&handle)?;
+
+            // 未ペアリング (トークン未保存) で起動した場合は、常駐アプリとして隠れている
+            // 前提のメインウィンドウを自動で前面に出す (実装計画: ペアリングカードに
+            // 気づけないまま常時接続が待機し続ける状態を避ける)。keyring アクセス自体が
+            // 失敗した場合も安全側 (未ペアリング扱い) にする。
+            let has_token = match settings::token::get() {
+                Ok(token) => token.is_some(),
+                Err(e) => {
+                    tracing::warn!("トークンの確認に失敗: {e}。未ペアリングとして扱い、メインウィンドウを表示する");
+                    false
+                }
+            };
+            if !has_token {
+                if let Some(window) = handle.get_webview_window("main") {
+                    if let Err(e) = window.show() {
+                        tracing::warn!("メインウィンドウの表示に失敗: {e}");
+                    }
+                    if let Err(e) = window.set_focus() {
+                        tracing::warn!("メインウィンドウのフォーカスに失敗: {e}");
+                    }
+                }
+            }
 
             let orchestrator_settings = {
                 let state = app.state::<AppState>();
