@@ -1,0 +1,35 @@
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  padding: var(--space-md);
+  text-align: left;
+  border-radius: var(--radius-md);
+  border: 1px solid transparent;
+  background: var(--color-surface);
+  transition: background var(--duration-fast) var(--ease-out), border-color var(--duration-fast) var(--ease-out);
+}
+
+.card:hover {
+  background: var(--color-surface-2);
+}
+
+.card[aria-current="true"] {
+  background: var(--color-surface-2);
+  border-color: var(--color-border-strong);
+}
+
+.title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm);
+  font-size: var(--fs-body-sm);
+  font-weight: 500;
+  color: var(--color-on-dark);
+}
+
+.badges {
+  display: flex;
+  gap: var(--space-xs);
+}

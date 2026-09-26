@@ -43,6 +43,22 @@ voice-server serve --config ~/voice/config/server.yaml
 
 ## ペアリング (トークンを手元で `token issue` せずに端末から取得する)
 
+`pairing.mode` で挙動が変わる (既定 `"open"`)。
+
+### `open` モード (既定)
+
+コード不要で、端末は無認証で `POST /v1/pair` (`{"device": "<端末名>"}`。`code` は省略可・
+渡しても無視される) を呼ぶだけで無条件にトークンが発行される。`{"device", "token", "fingerprint"}`
+を受け取ってトークンと証明書フィンガープリントを保存する。同名 device での再要求は新トークンを
+発行し、旧トークンは自動的に失効する (端末の再インストール時に再ペアリングできるようにするため)。
+ログには device 名だけを記録する (INFO)。
+
+**前提**: このモードは LAN 内を ufw 等で外部から閉じ、利用者が単一ユーザーである環境向け。
+外出先から VPN 経由で Gateway に接続する場合は、認証なしでトークンを発行してしまうため
+`pairing.mode: "code"` に切り替えること。
+
+### `code` モード
+
 1. Gateway 側で `voice-server pair --config ~/voice/config/server.yaml` を実行する。
    6桁の数字コードと有効期限が表示される (この1回だけ)。
 2. クライアントでそのコードを入力する。クライアントは無認証で
@@ -60,7 +76,8 @@ voice-server serve --config ~/voice/config/server.yaml
 | `server` | `tls_cert_path` / `tls_key_path` | `~/voice/config/tls/server.{crt,key}` | 自己署名証明書 |
 | `tokens` | `path` | `~/voice/config/tokens.yaml` | トークンの SHA-256 ハッシュ保存先 (0600) |
 | `dictionary` | `path` | `~/voice/config/dictionary.yaml` | 辞書の正本 |
-| `pairing` | `path` | `~/voice/config/pairing.yaml` | `voice-server pair` が書くコードのハッシュ + 有効期限 (0600、使い切りで削除) |
+| `pairing` | `path` | `~/voice/config/pairing.yaml` | `voice-server pair` が書くコードのハッシュ + 有効期限 (0600、使い切りで削除。`code` モードのみ使用) |
+| `pairing` | `mode` | `open` | `open` (コード不要、LAN 内単一ユーザー向け) / `code` (6桁コード必須。VPN 経由等の外出先利用ではこちら) |
 | `asr` | `backend` | `faster_whisper` | `dummy` (テスト用) / `faster_whisper` / (bench候補: 未実装) |
 | `asr` | `model` / `model_path` / `compute_type` / `device` | `large-v3-turbo` / なし / `float16` / `cuda` | ASR モデル |
 | `asr` | `strategy` | `segmented` | `segmented` / `whole` |

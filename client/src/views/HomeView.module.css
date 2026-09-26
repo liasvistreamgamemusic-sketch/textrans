@@ -1,0 +1,7 @@
+.view {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xl);
+  max-width: 880px;
+  margin: 0 auto;
+}

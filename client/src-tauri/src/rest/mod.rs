@@ -183,7 +183,10 @@ pub async fn put_dictionary(
 #[derive(Debug, Serialize)]
 struct PairRequest<'a> {
     device: &'a str,
-    code: &'a str,
+    /// サーバーがコード不要 (`{"device": str}` のみで 200 を返す) 運用になったため既定で送らない。
+    /// サーバーが code モードのときの手動経路用に残す。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    code: Option<&'a str>,
 }
 
 /// `POST /v1/pair` の成功応答 (サーバー契約: 無認証、成功 200、失敗 403)。
@@ -195,16 +198,18 @@ pub struct PairResponse {
     pub fingerprint: String,
 }
 
-/// `POST /v1/pair` (無認証)。ペアリングコードと端末名からトークンを発行してもらう
-/// (design.md 上のサーバー契約、実装は `voice-server` 側)。TLS は呼び出し側が TOFU で
-/// 取得したフィンガープリントで固定する — まだ承認済みの値ではないため、応答の
-/// `fingerprint` が同じ値であることを呼び出し側で必ず検証すること。
+/// `POST /v1/pair` (無認証)。端末名 (と、サーバーが code モードのときはペアリングコード) から
+/// トークンを発行してもらう (design.md 上のサーバー契約、実装は `voice-server` 側)。現行の
+/// サーバー運用は `code` 不要 (`{"device": str}` だけで 200 を返す) だが、手動経路用に
+/// `code: Option<&str>` を残す。TLS は呼び出し側が TOFU で取得したフィンガープリントで固定する
+/// — まだ承認済みの値ではないため、応答の `fingerprint` が同じ値であることを呼び出し側で
+/// 必ず検証すること。
 pub async fn pair(
     host: &str,
     port: u16,
     fingerprint_hex: &str,
     device: &str,
-    code: &str,
+    code: Option<&str>,
 ) -> Result<PairResponse, RestError> {
     let body = serde_json::to_vec(&PairRequest { device, code })?;
     let (status, resp_body) = request(host, port, fingerprint_hex, "POST", "/v1/pair", None, Some(&body)).await?;
@@ -217,6 +222,20 @@ pub async fn pair(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pair_request_omits_code_field_when_none() {
+        let req = PairRequest { device: "my-mac", code: None };
+        let json = serde_json::to_string(&req).unwrap();
+        assert_eq!(json, r#"{"device":"my-mac"}"#);
+    }
+
+    #[test]
+    fn pair_request_includes_code_field_when_some() {
+        let req = PairRequest { device: "my-mac", code: Some("123456") };
+        let json = serde_json::to_string(&req).unwrap();
+        assert_eq!(json, r#"{"device":"my-mac","code":"123456"}"#);
+    }
 
     #[test]
     fn host_and_port_parses_wss_url() {
@@ -304,7 +323,10 @@ mod tests {
                 "/v1/pair は無認証のはずなのに Authorization ヘッダーが付いている: {request_text}"
             );
             assert!(request_text.contains("\"device\":\"my-mac\""));
-            assert!(request_text.contains("\"code\":\"123456\""));
+            assert!(
+                !request_text.contains("\"code\""),
+                "code 不要のはずなのに code フィールドが送られている: {request_text}"
+            );
 
             let body = br#"{"device":"my-mac","token":"tok-abc123","fingerprint":"8C:4D:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:88"}"#;
             let response = format!(
@@ -316,7 +338,7 @@ mod tests {
             tls.shutdown().await.expect("TLS シャットダウン");
         });
 
-        let response = pair(&addr.ip().to_string(), addr.port(), &fingerprint, "my-mac", "123456")
+        let response = pair(&addr.ip().to_string(), addr.port(), &fingerprint, "my-mac", None)
             .await
             .expect("pair が成功すること");
         assert_eq!(response.device, "my-mac");
@@ -365,7 +387,7 @@ mod tests {
             tls.shutdown().await.expect("TLS シャットダウン");
         });
 
-        let result = pair(&addr.ip().to_string(), addr.port(), &fingerprint, "my-mac", "000000").await;
+        let result = pair(&addr.ip().to_string(), addr.port(), &fingerprint, "my-mac", None).await;
         assert!(matches!(result, Err(RestError::HttpStatus { status: 403 })));
 
         server_task.await.expect("server task panicked");

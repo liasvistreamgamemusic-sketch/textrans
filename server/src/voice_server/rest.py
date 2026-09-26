@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from jsonschema import ValidationError
@@ -17,6 +18,8 @@ from .auth import extract_bearer_token
 from .dictionary import Dictionary
 from .protocol_schemas import validate_message
 from .tls import fingerprint as compute_fingerprint
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -30,7 +33,8 @@ _DEVICE_NAME_PATTERN = r"^[A-Za-z0-9_-]{1,64}$"
 
 class PairRequest(BaseModel):
     device: str = Field(pattern=_DEVICE_NAME_PATTERN)
-    code: str
+    # "code" モードでのみ必須。"open" モードでは省略可・値があっても無視する。
+    code: str | None = None
 
 
 async def _read_body_with_limit(request: Request, max_bytes: int) -> bytes:
@@ -75,10 +79,14 @@ async def healthz(request: Request) -> dict:
 
 @router.post("/v1/pair")
 async def pair(request: Request) -> dict:
-    """CLI `voice-server pair` で生成したコードを使ってトークンを発行する (1回きり、無認証)。
+    """トークンを発行する (無認証)。`pairing.mode` によって挙動が変わる。
 
-    成功/失敗の理由 (コード不一致・期限切れ・ファイル無し) は一律 403 とし区別しない
-    (総当たり耐性)。失敗時は `limits.pair_failure_delay_s` だけ待ってから応答する。
+    - "open": `code` は無視し、`device` だけで無条件にトークンを発行する。同名の再要求は
+      新トークンを発行し、旧トークンは (`TokenStore.issue` が上書きするため) 自動的に失効する。
+      LAN 内を ufw で閉じた単一ユーザー環境向け (README「ペアリング」参照)。
+    - "code": CLI `voice-server pair` で生成したコードが必須 (従来通り)。成功/失敗の理由
+      (コード不一致・期限切れ・ファイル無し) は一律 403 とし区別しない (総当たり耐性)。
+      失敗時は `limits.pair_failure_delay_s` だけ待ってから応答する。
     """
     state = request.app.state.voice
     # 専用の上限は設けず、他の小さな JSON ボディと同じ上限 (`max_dictionary_body_bytes`) を流用する。
@@ -95,9 +103,14 @@ async def pair(request: Request) -> dict:
     except PydanticValidationError as exc:
         raise HTTPException(status_code=422, detail="invalid pairing request") from exc
 
-    if not state.pairing_store.verify_and_consume(pair_request.code):
-        await asyncio.sleep(state.config.limits.pair_failure_delay_s)
-        raise HTTPException(status_code=403, detail=_PAIR_INVALID_DETAIL)
+    if state.config.pairing.mode == "code":
+        if pair_request.code is None:
+            raise HTTPException(status_code=422, detail="invalid pairing request")
+        if not state.pairing_store.verify_and_consume(pair_request.code):
+            await asyncio.sleep(state.config.limits.pair_failure_delay_s)
+            raise HTTPException(status_code=403, detail=_PAIR_INVALID_DETAIL)
+    else:
+        logger.info("open ペアリング要求 (device=%s)", pair_request.device)
 
     token = state.token_store.issue(pair_request.device)
     device_fingerprint = compute_fingerprint(state.config.server.tls_cert_path)

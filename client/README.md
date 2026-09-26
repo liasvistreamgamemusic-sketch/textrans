@@ -10,11 +10,13 @@ client/
 │   ├── src/
 │   │   ├── protocol/    WebSocket メッセージ型 (protocol_version = 1、protocol/ 配下の JSON Schema と同期)
 │   │   ├── ws/          常時接続・30秒 ping・自動再接続・証明書フィンガープリント固定
-│   │   ├── rest/        GET/PUT /v1/dictionary の最小 HTTPS クライアント
-│   │   ├── audio/       cpal 録音 → rubato で 16kHz mono PCM16LE、100ms チャンク、300ms プリロール
+│   │   ├── rest/        GET/PUT /v1/dictionary・POST /v1/pair の最小 HTTPS クライアント
+│   │   ├── audio/       cpal 録音 → rubato で 16kHz mono PCM16LE、100ms チャンク、300ms プリロール、RMS
 │   │   ├── state/       発話の状態機械 (押下/解放/Esc/final/エラー、発話順キュー、リピート押下無視)
 │   │   ├── insert/      クリップボード貼り付け・直接送出、前面アプリ一致判定、復元判定
-│   │   ├── settings/    設定の JSON 永続化、トークンの keyring 保存
+│   │   ├── settings/    設定の JSON 永続化、トークンの keyring 保存 (フォールバック付き)、履歴 (直近20件)
+│   │   ├── status/      React 側と共有する `Status` の一元管理 (`voice://status`)
+│   │   ├── accessibility/  macOS アクセシビリティ権限の確認・誘導
 │   │   ├── overlay/     状態表示オーバーレイウィンドウ
 │   │   ├── orchestrator.rs  上記をつなぐ実行ループ
 │   │   └── commands.rs  React から呼ぶ Tauri コマンド
@@ -40,37 +42,53 @@ cargo clippy --all-targets -- -D warnings
 
 ## 初回セットアップ (ペアリング)
 
-初回起動時 (トークン未保存の間) は常駐アプリでもメインウィンドウが自動で前面に出る。設定画面
-先頭の「ペアリング」カードで、以下の手順だけで接続設定が完了する:
+トークン未保存で起動すると、**ユーザー操作なしで自動的にペアリングを試みる** (`lib.rs` の
+`auto_pair_forever`)。手順は以下 (a〜d) を `code` 無しで自動実行するだけ:
 
-1. サーバー側で `voice-server pair` を実行し、6桁のペアリングコードを発行する。
-2. voice-client の設定画面で「サーバー URL」(既定 `wss://192.168.11.10:8765`) と、発行された
-   6桁コードを入力して「ペアリング」ボタンを押す。
-3. 内部では (a) TOFU でサーバー証明書のフィンガープリントを取得 → (b) そのフィンガープリントで
-   固定した TLS 越しに `POST /v1/pair` を呼ぶ → (c) 応答のフィンガープリントが (a) と一致することを
-   検証 (不一致ならなりすましの可能性として保存を中止) → (d) 発行された token を OS の
-   キーチェーン/資格情報マネージャーへ、フィンガープリントとサーバー URL を設定ファイルへ保存する。
-4. 成功すると「接続設定完了。サーバーのフィンガープリント: XX:XX:...」と表示され、常時接続が
-   自動的に始まる (再起動不要、設定スロットを共有しているため)。
-5. コードが無効・期限切れの場合は 403 が返り、「コードが無効か期限切れ。サーバーで
-   `voice-server pair` を実行し直してください」と表示される。サーバーで再度 `voice-server pair`
-   を実行してやり直す。
+1. (a) TOFU でサーバー証明書のフィンガープリントを取得する。
+2. (b) そのフィンガープリントで固定した TLS 越しに `POST /v1/pair` を `{"device": "<ホスト名>"}`
+   だけで呼ぶ (現行のサーバー運用はコード不要。`{"device","token","fingerprint"}` が返る)。
+3. (c) 応答のフィンガープリントが (a) と一致することを検証する (不一致ならなりすましの可能性として
+   保存を中止)。
+4. (d) 発行された token を OS のキーチェーン/資格情報マネージャー (失敗時はフォールバックファイル、
+   下記参照) へ、fingerprint と server_url を設定ファイルへ保存する。
 
-device 名 (サーバー側の識別名) は既定でこのマシンのホスト名から自動生成される (英数字・`-`・`_`
+失敗した場合 (サーバー未起動・LAN 外など) は 5秒→最大60秒の指数バックオフで再試行し続け、成功する
+まで常時接続は始まらない。device 名は既定でこのマシンのホスト名から自動生成される (英数字・`-`・`_`
 以外の文字は `-` に置換し、64 文字を超える分は切り捨てる)。
 
-証明書だけを個別に確認・承認したい場合 (上級者向け) は、「サーバー証明書」タブの折りたたみ内に
-従来通りの手動経路 (取得→目視確認→承認、または `voice-server cert fingerprint` の出力を直接貼り付け)
-が残っている。
+未ペアリングの間は常駐アプリでもメインウィンドウが自動で前面に出る (自動ペアリングが成功すれば
+React 側が `voice://status` の `paired: true` を見て隠せる想定)。サーバーが code モードの手動運用に
+戻された場合や、証明書だけを個別に確認・承認したい場合向けに、`pair(server_url, code?, device_name?)`
+コマンドの `code` 引数と `approve_fingerprint` (TOFU取得→目視確認→承認、または
+`voice-server cert fingerprint` の出力を直接貼り付け) の手動経路も残っている。
+
+サーバーを変更したときは `repair(server_url)` コマンドでトークンとフィンガープリントを捨てて
+TOFU からやり直せる (UI 契約)。
+
+### トークン保存のフォールバック
+
+macOS の ad-hoc 署名アプリでは keychain アクセスが OS に拒否される事例があるため、keyring への
+読み書きが失敗したら理由を warn ログに出したうえで、設定ファイル (`settings.json`) と同じ
+ディレクトリの `token` ファイル (権限 0600、ファイル所有者のみ読み書き可) へ自動的にフォールバック
+する (`settings::token`)。
 
 ## macOS の権限
 
 - マイク: `src-tauri/Info.plist` に `NSMicrophoneUsageDescription` を記載済み。Tauri の macOS バンドラーが
   `src-tauri/Info.plist` をアプリの Info.plist へマージする前提 (`cargo build` では確認できず、
   `cargo tauri build` でのバンドル時に確認が必要。未検証)。
-- アクセシビリティ権限: キー送信 (enigo) に必要。初回起動時に設定画面へ誘導する導線は未実装
-  (settings 画面に案内文を追加する形で拡張できる)。
+- アクセシビリティ権限: キー送信 (enigo)・前面アプリ取得 (insert モジュール) に必要。
+  `accessibility::is_trusted` (`objc2-application-services` の `AXIsProcessTrustedWithOptions`) で
+  確認する。起動時に `kAXTrustedCheckOptionPrompt=true` で呼び、未許可なら OS がシステム設定への
+  誘導ダイアログを (非同期に) 表示する。状態は `Status.ax_trusted` として `voice://status` 経由で
+  React 側に共有され、未許可のまま挿入を試みた場合は挿入をスキップして
+  `voice://insert_failed{reason:"accessibility"}` を発行する。`open_accessibility_settings` コマンドで
+  `x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility` を開ける。
 - 署名: 権限は署名 ID に紐づく。配布時は固定の署名 ID で署名する (本実装では未設定)。
+  ⚠️ 実機でのアクセシビリティ許可ダイアログ・実際の権限取得フローの動作確認はしていない
+  (macOS 上でこのセッションでは GUI 操作ができないため、`AXIsProcessTrustedWithOptions` の
+  API シグネチャ・型 (crates.io / ソース確認済み) レベルの検証止まり)。
 
 ## Windows
 
@@ -106,10 +124,18 @@ device 名 (サーバー側の識別名) は既定でこのマシンのホスト
 - **設定変更の反映タイミング**: `Orchestrator` は起動時に設定のスナップショットを持つだけで、
   設定画面で保存した変更 (ホットキー・マイクデバイス・常時オープン等) を実行中に取り込む仕組みは
   まだ無い。反映には再起動が必要 (次の改修候補として認識している既知の制約)。
+- **`voice://level` の 50ms 粒度**: 波形表示用の RMS は、新たに生の音声を別経路で取り出すのではなく
+  既存の 100ms PCM チャンク (サーバー送信用と同じもの) を前後半に2分割して計算している
+  (「PCM から RMS を計算する」契約を満たしつつ、プロトコル上のチャンク幅は変えない設計判断)。
+  そのため実際の発行タイミングは cpal のコールバック到着間隔に依存し、厳密に50ms周期ではない。
+- **履歴の `inserted` フィールドと `voice://result` の発行タイミング**: `voice://result` は `final`
+  受信時点 (挿入前) に発行するため、その時点では `inserted: false` になる。実際の挿入結果は
+  `perform_insert` 完了後に履歴側 (`get_history` で取得する分) だけ更新する
+  (再発行はしない。UI 契約が「final 受信ごと」に1回のイベントを求めているため)。
 
 ## テスト内容と検証結果
 
-`cargo test` (2026-09-27、macOS / rustc 1.92 / cargo 1.92 で実行、64 tests):
+`cargo test` (2026-09-27、macOS / rustc 1.92 / cargo 1.92 で実行、96 tests):
 
 - `protocol::tests`: `protocol/fixtures/valid/*.json` の全件を `ClientMessage`/`ServerMessage`/`Dictionary` へ
   デシリアライズ→シリアライズ→再デシリアライズしてラウンドトリップを確認。`protocol/fixtures/invalid/*.json` は
@@ -136,8 +162,21 @@ device 名 (サーバー側の識別名) は既定でこのマシンのホスト
   積むだけで配送しない、押下後は配送を始める (かつ押下前のプリロールを返す)、解放後は配送を止めるが
   プリロールへの蓄積は続くこと — を検証。
 - `settings::tests`: 既定値が design.md §5.8 と一致すること、設定ファイルの保存・読込のラウンドトリップ、
-  履歴の直近20件保持を検証。
-- `rest::tests`: `wss://host:port` の解析、HTTP レスポンスのステータス/ボディ解析 (Content-Length あり/なし) を検証。
+  履歴の直近20件保持・`mark_inserted` が対象の項目だけ更新すること、ISO8601 (UTC) 変換
+  (エポック・世紀境界・うるう日を含む既知の値) を検証。
+- `rest::tests`: `wss://host:port` の解析、HTTP レスポンスのステータス/ボディ解析 (Content-Length あり/なし)、
+  `PairRequest` の `code` フィールドが `None` のとき省略され `Some` のときだけ含まれることを検証。
+- `state::tests`: 上記に加え、UI 契約 `phase` 用の `ui_phase()` (idle/recording/waiting/inserting の
+  優先順位判定) を検証。
+- `status::tests`: `StatusStore` の初期値スナップショット、`UiPhase → Phase` の対応を検証。
+- `audio::tests`: 上記に加え、`rms` (無音=0・フルスケール=1・範囲外入力のクリップ) と
+  `decode_pcm16le` (`encode_pcm16le` とのラウンドトリップ、末尾半端バイトの無視) を検証。
+- `commands::tests`: 上記に加え、`pair_and_verify` がサーバー契約通り `code` フィールドを
+  送らないことを検証 (自動ペアリング前提)。
+- `accessibility`/`status`/`lib.rs` の macOS 実 I/O 部分 (`AXIsProcessTrustedWithOptions` の実際の
+  戻り値、`voice://status`/`voice://level`/`voice://result`/`voice://insert_failed` の実発行、
+  自動ペアリングの実サーバーに対する動作) は Tauri ランタイム・実デバイス・実サーバーが必要なため
+  単体テストの対象外 (既存の `orchestrator.rs`/`overlay` と同じ方針)。
 
 `cargo build` / `pnpm build` (`tsc --noEmit` strict + `vite build`) は成功。`cargo clippy --all-targets -- -D warnings`
 は警告ゼロ。
@@ -158,7 +197,12 @@ device 名 (サーバー側の識別名) は既定でこのマシンのホスト
 - Windows: 前面アプリ判定・クリップボード変更カウンタ (`GetClipboardSequenceNumber` 呼び出しに変更済み) が
   macOS 上のこのリポジトリではコンパイル・実機動作の確認が一切できていない (上記「Windows」節)。
   ビルド確認自体も macOS 上でのクロスコンパイルは行っていない。
-- アクセシビリティ権限への誘導 UI (macOS) は未実装。
+- アクセシビリティ権限への誘導自体 (`AXIsProcessTrustedWithOptions` の呼び出し・
+  `open_accessibility_settings` コマンド・`voice://insert_failed{reason:"accessibility"}`) は実装したが、
+  実機での許可ダイアログ表示・許可後の実際の挙動変化はこのセッションでは確認していない
+  (macOS の GUI 操作ができないため)。
+- 起動時の自動ペアリング (`auto_pair_forever`) はロジック・単体テスト (`pair_and_verify` 部分) 止まりで、
+  実サーバー (`server/`) に対する実際の起動→自動ペアリング成功の確認はしていない。
 - 署名 (固定の署名 ID) は未設定。
 - `tauri build` によるアプリバンドル生成 (署名・実際のインストーラ作成) はまだ実行していない。
   アイコン自体は `src-tauri/icons/source.svg` (マイクをモチーフにした 1024×1024 SVG) から

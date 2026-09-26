@@ -3,15 +3,18 @@
 //! モジュール構成 (design.md §5.1 の技術スタックに対応):
 //! - [`protocol`][]: WebSocket メッセージ型・辞書型 (protocol_version = 1)
 //! - [`ws`][]: 常時接続・証明書ピン留め・送信バッファ
-//! - [`rest`][]: `GET/PUT /v1/dictionary`
-//! - [`audio`][]: 録音・リサンプリング・チャンク分割
+//! - [`rest`][]: `GET/PUT /v1/dictionary`・`POST /v1/pair`
+//! - [`audio`][]: 録音・リサンプリング・チャンク分割・RMS
 //! - [`state`][]: 発話の状態機械
 //! - [`insert`][]: クリップボード貼り付け・直接送出
-//! - [`settings`][]: 設定の永続化・トークンの keyring 保存
+//! - [`settings`][]: 設定の永続化・トークンの keyring 保存 (フォールバック付き)・履歴
+//! - [`status`][]: React 側と共有する `Status` の一元管理 (`voice://status`)
+//! - [`accessibility`][]: macOS アクセシビリティ権限の確認
 //! - [`overlay`][]: 状態表示オーバーレイウィンドウ
 //! - [`orchestrator`][]: 上記をつなぐ実行ループ
 //! - [`commands`][]: React (設定画面・辞書エディタ) から呼ばれる Tauri コマンド
 
+pub mod accessibility;
 pub mod audio;
 pub mod commands;
 pub mod insert;
@@ -21,8 +24,10 @@ pub mod protocol;
 pub mod rest;
 pub mod settings;
 pub mod state;
+pub mod status;
 pub mod ws;
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use tauri::Manager;
@@ -32,23 +37,31 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
 use commands::AppState;
 use orchestrator::{Orchestrator, OrchestratorEvent};
-use settings::Settings;
+use settings::{History, Settings};
+use status::StatusStore;
 use ws::verifier::FingerprintVerifier;
 use ws::PendingQueue;
 
-/// 設定ファイルのパス。`app.path().app_config_dir()` 配下。
-fn settings_path(app: &tauri::AppHandle) -> std::path::PathBuf {
-    let dir = app
-        .path()
+/// 設定ファイル (`settings.json`) とトークンのフォールバックファイルが置かれるディレクトリ。
+fn config_dir(app: &tauri::AppHandle) -> PathBuf {
+    app.path()
         .app_config_dir()
-        .expect("設定ディレクトリを解決できない (OS の設定ディレクトリ API が失敗)");
-    dir.join("settings.json")
+        .expect("設定ディレクトリを解決できない (OS の設定ディレクトリ API が失敗)")
+}
+
+/// 設定ファイルのパス。`app.path().app_config_dir()` 配下。
+fn settings_path(app: &tauri::AppHandle) -> PathBuf {
+    config_dir(app).join("settings.json")
 }
 
 /// 既定ホットキー (design.md §5.2「両OSとも Ctrl+Shift+Space」)。
 fn default_shortcut() -> Shortcut {
     Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::Space)
 }
+
+/// 自動ペアリングの再試行間隔 (実装計画: 「5秒→最大60秒のバックオフ」)。
+const AUTO_PAIR_INITIAL_BACKOFF: std::time::Duration = std::time::Duration::from_secs(5);
+const AUTO_PAIR_MAX_BACKOFF: std::time::Duration = std::time::Duration::from_secs(60);
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -85,6 +98,8 @@ pub fn run() {
         .manage(AppState {
             settings: Arc::new(Mutex::new(Settings::default())),
             outgoing: outgoing.clone(),
+            status: Arc::new(StatusStore::new(Settings::default().server_url, false, None)),
+            history: Arc::new(Mutex::new(History::default())),
         })
         .invoke_handler(tauri::generate_handler![
             commands::get_settings,
@@ -95,17 +110,46 @@ pub fn run() {
             commands::approve_fingerprint,
             commands::has_token,
             commands::pair,
+            commands::repair,
+            commands::get_status,
+            commands::get_history,
+            commands::copy_history_item,
+            commands::open_accessibility_settings,
         ])
         .setup(move |app| {
             let handle = app.handle().clone();
 
             let path = settings_path(&handle);
             let loaded = settings::load(&path).unwrap_or_default();
+            let dir = config_dir(&handle);
+
+            // 未ペアリング (トークン未保存) 判定。keyring アクセス自体が失敗した場合も
+            // 安全側 (未ペアリング扱い) にする。
+            let paired = match settings::token::get(&dir) {
+                Ok(token) => token.is_some(),
+                Err(e) => {
+                    tracing::warn!("トークンの確認に失敗: {e}。未ペアリングとして扱う");
+                    false
+                }
+            };
+
+            // macOS アクセシビリティ権限。起動時は `kAXTrustedCheckOptionPrompt=true` で確認し、
+            // 未許可なら OS がシステム設定への誘導ダイアログを (非同期に) 出す。
+            let ax_trusted = accessibility::is_trusted(true);
+
             {
                 let state = app.state::<AppState>();
+                state.status.set_server_url(&handle, loaded.server_url.clone());
+                state.status.set_paired(&handle, paired);
+                state.status.set_fingerprint(
+                    &handle,
+                    loaded.server_fingerprint_hex.as_deref().map(ws::verifier::to_colon_upper),
+                );
+                state.status.set_ax_trusted(&handle, ax_trusted);
+
                 let settings_slot = state.settings.clone();
                 tauri::async_runtime::block_on(async move {
-                    *settings_slot.lock().await = loaded.clone();
+                    *settings_slot.lock().await = loaded;
                 });
             }
 
@@ -113,18 +157,10 @@ pub fn run() {
 
             overlay::ensure_overlay_window(&handle)?;
 
-            // 未ペアリング (トークン未保存) で起動した場合は、常駐アプリとして隠れている
-            // 前提のメインウィンドウを自動で前面に出す (実装計画: ペアリングカードに
-            // 気づけないまま常時接続が待機し続ける状態を避ける)。keyring アクセス自体が
-            // 失敗した場合も安全側 (未ペアリング扱い) にする。
-            let has_token = match settings::token::get() {
-                Ok(token) => token.is_some(),
-                Err(e) => {
-                    tracing::warn!("トークンの確認に失敗: {e}。未ペアリングとして扱い、メインウィンドウを表示する");
-                    false
-                }
-            };
-            if !has_token {
+            // 未ペアリングで起動した場合は、常駐アプリとして隠れている前提のメインウィンドウを
+            // 自動で前面に出す (手動ペアリング・サーバーが code モードの場合の導線として残す)。
+            // 自動ペアリング (下記 `auto_pair_forever`) が成功すればすぐに閉じられる想定。
+            if !paired {
                 if let Some(window) = handle.get_webview_window("main") {
                     if let Err(e) = window.show() {
                         tracing::warn!("メインウィンドウの表示に失敗: {e}");
@@ -139,8 +175,18 @@ pub fn run() {
                 let state = app.state::<AppState>();
                 tauri::async_runtime::block_on(async { state.settings.lock().await.clone() })
             };
-            let orchestrator =
-                Orchestrator::new(handle.clone(), orchestrator_settings, outgoing.clone(), events_tx.clone());
+            let (status_arc, history_arc) = {
+                let state = app.state::<AppState>();
+                (state.status.clone(), state.history.clone())
+            };
+            let orchestrator = Orchestrator::new(
+                handle.clone(),
+                orchestrator_settings,
+                outgoing.clone(),
+                events_tx.clone(),
+                status_arc,
+                history_arc,
+            );
             tauri::async_runtime::spawn(orchestrator.run(events_rx));
 
             // サーバーからのメッセージをオーケストレーターへ転送する。
@@ -153,14 +199,51 @@ pub fn run() {
                 }
             });
 
+            // 起動時の完全自動接続 (実装計画): トークン未保存なら、ユーザー操作ゼロで
+            // ペアリング (code なし) を試み続ける。成功すれば常時接続ループがそのまま拾う。
+            if !paired {
+                tauri::async_runtime::spawn(auto_pair_forever(handle.clone()));
+            }
+
             // 常時接続 (design.md §3.1)。設定スロットを共有し、承認・変更を再起動なしで拾う。
             let ws_settings = app.state::<AppState>().settings.clone();
-            tauri::async_runtime::spawn(run_connection_forever(ws_settings, outgoing, incoming_tx));
+            let status_for_connection = app.state::<AppState>().status.clone();
+            tauri::async_runtime::spawn(run_connection_forever(
+                handle.clone(),
+                ws_settings,
+                outgoing,
+                incoming_tx,
+                status_for_connection,
+            ));
 
             Ok(())
         })
         .run(tauri::generate_context!())
         .expect("tauri アプリケーションの起動に失敗");
+}
+
+/// 起動時の自動ペアリング (実装計画: 「code なしで自動実行する。失敗したら5秒→最大60秒の
+/// バックオフで再試行し続ける」)。既にトークンがある場合は呼び出し元 (`run`) が起動しない。
+async fn auto_pair_forever(app: tauri::AppHandle) {
+    let mut backoff = AUTO_PAIR_INITIAL_BACKOFF;
+    loop {
+        let server_url = {
+            let state = app.state::<AppState>();
+            let guard = state.settings.lock().await;
+            guard.server_url.clone()
+        };
+        match commands::perform_pair(&app, server_url, None, None).await {
+            Ok(outcome) => {
+                tracing::info!("起動時の自動ペアリングに成功した (fingerprint: {})", outcome.fingerprint_hex);
+                return;
+            }
+            Err(e) => {
+                tracing::warn!("起動時の自動ペアリングに失敗: {e}。{backoff:?} 後に再試行する");
+            }
+        }
+        tokio::time::sleep(backoff).await;
+        backoff = std::cmp::min(backoff * 2, AUTO_PAIR_MAX_BACKOFF);
+    }
 }
 
 /// 承認待ちや設定不備のときに設定を読み直すまでの間隔。
@@ -171,13 +254,16 @@ const SETTINGS_RECHECK_INTERVAL: std::time::Duration = std::time::Duration::from
 /// フィンガープリント未承認 (`server_fingerprint_hex: None`) の間は接続を試みず待機する
 /// (初回接続の承認 UI は React 側、design.md §5.8)。
 async fn run_connection_forever(
+    app: tauri::AppHandle,
     settings: Arc<Mutex<Settings>>,
     outgoing: PendingQueue,
     incoming_tx: mpsc::UnboundedSender<protocol::ServerMessage>,
+    status: Arc<StatusStore>,
 ) {
     let mut backoff = std::time::Duration::from_secs(1);
     const MAX_BACKOFF: std::time::Duration = std::time::Duration::from_secs(30);
     let mut announced_waiting = false;
+    let dir = config_dir(&app);
 
     // `outgoing` (PendingQueue) は接続の有無に関わらず常に同じインスタンスを使う。
     // 未接続の間もキャップ付きで溜まり続け、再接続後は先頭 (古い方) から送信される。
@@ -197,7 +283,13 @@ async fn run_connection_forever(
             tokio::time::sleep(SETTINGS_RECHECK_INTERVAL).await;
             continue;
         };
-        let token = settings::token::get().ok().flatten();
+        let token = match settings::token::get(&dir) {
+            Ok(token) => token,
+            Err(e) => {
+                tracing::warn!("トークンの取得に失敗: {e}。トークン無しで接続を試みる");
+                None
+            }
+        };
         if token.is_none() {
             tracing::warn!("トークンが未設定。設定画面で保存すると次の接続試行から使われる");
         }
@@ -206,12 +298,18 @@ async fn run_connection_forever(
             Ok(ws_stream) => {
                 tracing::info!("サーバーに接続した ({host}:{port})");
                 backoff = std::time::Duration::from_secs(1);
+                status.set_connected(&app, true);
+                status.set_last_error(&app, None);
                 if let Err(e) = ws::drive_connection(ws_stream, &outgoing, &incoming_tx).await {
                     tracing::warn!("WebSocket 接続が切れた: {e}");
+                    status.set_last_error(&app, Some(e.to_string()));
                 }
+                status.set_connected(&app, false);
             }
             Err(e) => {
                 tracing::warn!("接続に失敗: {e}。{backoff:?} 後に再試行する");
+                status.set_connected(&app, false);
+                status.set_last_error(&app, Some(e));
             }
         }
         tokio::time::sleep(backoff).await;

@@ -49,6 +49,25 @@ pub fn interleaved_to_mono(samples: &[f32], channels: usize) -> Vec<f32> {
         .collect()
 }
 
+/// RMS (二乗平均平方根) を 0.0..=1.0 で返す (UI 契約 `voice://level` の波形表示用)。
+/// 空入力は無音 (0.0) とする。
+pub fn rms(samples: &[f32]) -> f32 {
+    if samples.is_empty() {
+        return 0.0;
+    }
+    let sum_sq: f32 = samples.iter().map(|s| s * s).sum();
+    (sum_sq / samples.len() as f32).sqrt().min(1.0)
+}
+
+/// PCM16LE (リトルエンディアン) バイト列を f32 (-1.0..=1.0) の列へ変換する。
+/// 末尾に1バイト余る (壊れた/半端な) 入力は無視する。
+pub fn decode_pcm16le(bytes: &[u8]) -> Vec<f32> {
+    bytes
+        .chunks_exact(2)
+        .map(|b| i16::from_le_bytes([b[0], b[1]]) as f32 / i16::MAX as f32)
+        .collect()
+}
+
 /// f32 (-1.0..=1.0) を PCM16LE バイト列へ変換する。範囲外の値はクリップする。
 pub fn encode_pcm16le(samples: &[f32]) -> Vec<u8> {
     let mut out = Vec::with_capacity(samples.len() * 2);
@@ -286,6 +305,43 @@ mod tests {
     fn interleaved_to_mono_passthrough_for_mono_input() {
         let mono_in = [0.1, 0.2, 0.3];
         assert_eq!(interleaved_to_mono(&mono_in, 1), mono_in.to_vec());
+    }
+
+    #[test]
+    fn rms_of_silence_is_zero() {
+        assert_eq!(rms(&[0.0, 0.0, 0.0]), 0.0);
+    }
+
+    #[test]
+    fn rms_of_empty_is_zero() {
+        assert_eq!(rms(&[]), 0.0);
+    }
+
+    #[test]
+    fn rms_of_full_scale_constant_signal_is_one() {
+        assert_eq!(rms(&[1.0, -1.0, 1.0, -1.0]), 1.0);
+    }
+
+    #[test]
+    fn rms_clips_at_one_for_out_of_range_input() {
+        assert_eq!(rms(&[2.0, 2.0]), 1.0);
+    }
+
+    #[test]
+    fn decode_pcm16le_round_trips_with_encode_pcm16le() {
+        let samples = [0.0, 0.5, -0.5, 1.0, -1.0];
+        let bytes = encode_pcm16le(&samples);
+        let decoded = decode_pcm16le(&bytes);
+        assert_eq!(decoded.len(), samples.len());
+        for (a, b) in samples.iter().zip(decoded.iter()) {
+            assert!((a - b).abs() < 0.001, "a={a} b={b}");
+        }
+    }
+
+    #[test]
+    fn decode_pcm16le_ignores_trailing_odd_byte() {
+        let bytes = vec![0u8, 0u8, 1u8];
+        assert_eq!(decode_pcm16le(&bytes).len(), 1);
     }
 
     #[test]

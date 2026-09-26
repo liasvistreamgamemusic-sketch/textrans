@@ -51,6 +51,19 @@ pub fn normalize_fingerprint(input: &str) -> Result<String, FingerprintFormatErr
     Ok(normalized)
 }
 
+/// [`normalize_fingerprint`] の逆方向: 内部形式 (コロン無し・小文字、64桁) を
+/// UI 表示形式 (コロン区切り・大文字、`voice-server cert fingerprint` と同じ見た目) へ変換する。
+/// `Status.fingerprint` (UI 契約) はこの形式で返す。
+pub fn to_colon_upper(hex_lower_no_colon: &str) -> String {
+    hex_lower_no_colon
+        .as_bytes()
+        .chunks(2)
+        .filter_map(|pair| std::str::from_utf8(pair).ok())
+        .map(|s| s.to_uppercase())
+        .collect::<Vec<_>>()
+        .join(":")
+}
+
 /// 定数時間比較 (タイミング攻撃対策)。両者の長さが違う時点で不一致確定なので、その比較自体は
 /// (秘密の内容に依存しないので) 定数時間でなくてよい。
 fn constant_time_str_eq(a: &str, b: &str) -> bool {
@@ -237,6 +250,14 @@ mod tests {
     fn fingerprint_hex_is_deterministic() {
         let der = CertificateDer::from(vec![9, 9, 9]);
         assert_eq!(fingerprint_hex(&der), fingerprint_hex(&der));
+    }
+
+    #[test]
+    fn to_colon_upper_round_trips_with_normalize_fingerprint() {
+        let lower = "8c4d17".to_string() + &"00".repeat(29);
+        let colon_upper = to_colon_upper(&lower);
+        assert_eq!(colon_upper, "8C:4D:17".to_string() + &":00".repeat(29));
+        assert_eq!(normalize_fingerprint(&colon_upper).unwrap(), lower);
     }
 
     #[test]

@@ -1,5 +1,6 @@
 //! React (設定画面・辞書エディタ・フィンガープリント承認・ペアリング UI) から呼ばれる Tauri コマンド。
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use serde::Serialize;
@@ -8,21 +9,26 @@ use tokio::sync::Mutex;
 
 use crate::protocol::Dictionary;
 use crate::rest;
-use crate::settings::{self, Settings};
+use crate::settings::{self, History, HistoryItem, Settings};
+use crate::status::{Status, StatusStore};
 use crate::ws::verifier::normalize_fingerprint;
 use crate::ws::PendingQueue;
 
 pub struct AppState {
     pub settings: Arc<Mutex<Settings>>,
     pub outgoing: PendingQueue,
+    pub status: Arc<StatusStore>,
+    pub history: Arc<Mutex<History>>,
 }
 
-fn settings_file_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
-    let dir = app
-        .path()
+fn settings_dir_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    app.path()
         .app_config_dir()
-        .map_err(|e| format!("設定ディレクトリの取得に失敗: {e}"))?;
-    Ok(dir.join("settings.json"))
+        .map_err(|e| format!("設定ディレクトリの取得に失敗: {e}"))
+}
+
+fn settings_file_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    Ok(settings_dir_path(app)?.join("settings.json"))
 }
 
 #[tauri::command]
@@ -38,6 +44,11 @@ pub async fn save_settings(
 ) -> Result<(), String> {
     let path = settings_file_path(&app)?;
     settings::save(&path, &settings).map_err(|e| e.to_string())?;
+    state.status.set_server_url(&app, settings.server_url.clone());
+    state.status.set_fingerprint(
+        &app,
+        settings.server_fingerprint_hex.as_deref().map(crate::ws::verifier::to_colon_upper),
+    );
     *state.settings.lock().await = settings;
     Ok(())
 }
@@ -55,6 +66,7 @@ pub async fn probe_fingerprint(state: tauri::State<'_, AppState>) -> Result<Stri
 }
 
 /// 初回接続時にユーザーが承認したフィンガープリントを保存する (design.md §3.1, §5.8)。
+/// 手動経路 (サーバーが code モードのとき、または証明書だけを個別に承認したいとき) 用に残す。
 #[tauri::command]
 pub async fn approve_fingerprint(
     app: tauri::AppHandle,
@@ -64,8 +76,9 @@ pub async fn approve_fingerprint(
     let normalized = normalize_fingerprint(&fingerprint_hex).map_err(|e| e.to_string())?;
     let path = settings_file_path(&app)?;
     let mut current = state.settings.lock().await;
-    current.server_fingerprint_hex = Some(normalized);
+    current.server_fingerprint_hex = Some(normalized.clone());
     settings::save(&path, &current).map_err(|e| e.to_string())?;
+    state.status.set_fingerprint(&app, Some(crate::ws::verifier::to_colon_upper(&normalized)));
     Ok(())
 }
 
@@ -73,8 +86,9 @@ pub async fn approve_fingerprint(
 /// keyring アクセス自体が失敗した場合もエラーにせず「未ペアリング」として扱う
 /// (安全側 = ペアリングカードを出すだけで、既存の接続や辞書アクセスを止めるわけではない)。
 #[tauri::command]
-pub async fn has_token() -> Result<bool, String> {
-    match settings::token::get() {
+pub async fn has_token(app: tauri::AppHandle) -> Result<bool, String> {
+    let dir = settings_dir_path(&app)?;
+    match settings::token::get(&dir) {
         Ok(token) => Ok(token.is_some()),
         Err(e) => {
             tracing::warn!("トークンの確認に失敗: {e}。未ペアリングとして扱う");
@@ -84,7 +98,7 @@ pub async fn has_token() -> Result<bool, String> {
 }
 
 /// [`pair`] コマンドの成功応答。React 側の表示用にフィンガープリントだけを返す
-/// (トークンは keyring に保存済みで、React 側が保持する必要はない)。
+/// (トークンは keyring (またはフォールバックファイル) に保存済みで、React 側が保持する必要はない)。
 #[derive(Debug, Clone, Serialize)]
 pub struct PairOutcome {
     pub fingerprint_hex: String,
@@ -107,7 +121,7 @@ fn sanitize_device_name(input: &str) -> String {
 
 /// ホスト名から device 名を作る。ホスト名が UTF-8 として解釈できない場合も
 /// `to_string_lossy` で落とさずに済ませ、`sanitize_device_name` に委ねる。
-fn default_device_name() -> String {
+pub(crate) fn default_device_name() -> String {
     let hostname = gethostname::gethostname();
     sanitize_device_name(&hostname.to_string_lossy())
 }
@@ -132,7 +146,15 @@ fn verify_pair_fingerprint(probed_fingerprint_hex: &str, response_fingerprint: &
 /// フィンガープリントが a と一致することを検証)。keyring へ書き込む手順 d は副作用が大きく
 /// (実際の OS キーチェーンを変更してしまう) テストしにくいため、ここでは分離して
 /// モック TLS サーバーだけで検証できるようにしている。
-async fn pair_and_verify(host: &str, port: u16, device: &str, code: &str) -> Result<rest::PairResponse, String> {
+///
+/// `code` はサーバーがペアリングコードを要求するモードのときだけ渡す。サーバーが
+/// コード不要 (`{"device": str}` だけで 200 を返す) 運用になった現在は既定で `None`。
+async fn pair_and_verify(
+    host: &str,
+    port: u16,
+    device: &str,
+    code: Option<&str>,
+) -> Result<rest::PairResponse, String> {
     let probed_fingerprint = crate::ws::probe_fingerprint(host, port)
         .await
         .map_err(|e| e.to_string())?;
@@ -147,60 +169,140 @@ async fn pair_and_verify(host: &str, port: u16, device: &str, code: &str) -> Res
     })
 }
 
-/// 初回セットアップの自動化 (実装計画): (a) TOFU でフィンガープリントを取得 → (b) その
-/// フィンガープリントで固定した TLS で `POST /v1/pair` → (c) 応答のフィンガープリントが
-/// (a) と一致することを検証 → (d) token を keyring、fingerprint と server_url を設定へ保存する。
+/// ペアリング本体: (a) TOFU でフィンガープリントを取得 → (b) そのフィンガープリントで固定した
+/// TLS で `POST /v1/pair` → (c) 応答のフィンガープリントが (a) と一致することを検証 →
+/// (d) token を keyring (失敗時はフォールバックファイル)、fingerprint と server_url を設定へ保存する。
 /// `device_name` を省略した場合はホスト名から既定値を作る。
-#[tauri::command]
-pub async fn pair(
-    app: tauri::AppHandle,
-    state: tauri::State<'_, AppState>,
+///
+/// [`pair`] (手動/UI 契約コマンド) と、起動時の自動ペアリング (`lib.rs`) の両方から呼ばれる
+/// (実装計画: 「起動時に code なしで自動実行する」)。
+pub(crate) async fn perform_pair(
+    app: &tauri::AppHandle,
     server_url: String,
-    code: String,
+    code: Option<String>,
     device_name: Option<String>,
 ) -> Result<PairOutcome, String> {
+    let state = app.state::<AppState>();
     let (host, port) = rest::host_and_port(&server_url).map_err(|e| e.to_string())?;
     let device = device_name.unwrap_or_else(default_device_name);
 
-    let response = pair_and_verify(&host, port, &device, &code).await?;
+    let response = pair_and_verify(&host, port, &device, code.as_deref()).await?;
 
-    settings::token::set(&response.token).map_err(|e| e.to_string())?;
+    let dir = settings_dir_path(app)?;
+    settings::token::set(&dir, &response.token).map_err(|e| e.to_string())?;
 
-    let path = settings_file_path(&app)?;
-    let mut current = state.settings.lock().await;
-    current.server_url = server_url;
-    current.server_fingerprint_hex = Some(response.fingerprint.clone());
-    settings::save(&path, &current).map_err(|e| e.to_string())?;
+    let path = settings_file_path(app)?;
+    {
+        let mut current = state.settings.lock().await;
+        current.server_url = server_url.clone();
+        current.server_fingerprint_hex = Some(response.fingerprint.clone());
+        settings::save(&path, &current).map_err(|e| e.to_string())?;
+    }
+
+    state.status.set_server_url(app, server_url);
+    state.status.set_device_name(app, Some(device));
+    state.status.set_fingerprint(app, Some(crate::ws::verifier::to_colon_upper(&response.fingerprint)));
+    state.status.set_paired(app, true);
+    state.status.set_last_error(app, None);
 
     Ok(PairOutcome {
         fingerprint_hex: response.fingerprint,
     })
 }
 
-async fn dictionary_endpoint(state: &tauri::State<'_, AppState>) -> Result<(String, u16, String, String), String> {
+#[tauri::command]
+pub async fn pair(
+    app: tauri::AppHandle,
+    server_url: String,
+    code: Option<String>,
+    device_name: Option<String>,
+) -> Result<PairOutcome, String> {
+    perform_pair(&app, server_url, code, device_name).await
+}
+
+/// サーバー変更時などにトークンを捨てて再ペアリングする (UI 契約 `repair`)。
+/// フィンガープリントも捨てる (サーバーが変わっているはずなので TOFU をやり直す)。
+#[tauri::command]
+pub async fn repair(app: tauri::AppHandle, server_url: String) -> Result<Status, String> {
+    let state = app.state::<AppState>();
+    let dir = settings_dir_path(&app)?;
+    if let Err(e) = settings::token::delete(&dir) {
+        tracing::warn!("再ペアリング前のトークン削除に失敗: {e}");
+    }
+    {
+        let mut current = state.settings.lock().await;
+        current.server_fingerprint_hex = None;
+    }
+    state.status.set_paired(&app, false);
+    state.status.set_fingerprint(&app, None);
+
+    perform_pair(&app, server_url, None, None).await?;
+    Ok(state.status.snapshot())
+}
+
+/// UI 契約 `get_status`。
+#[tauri::command]
+pub async fn get_status(state: tauri::State<'_, AppState>) -> Result<Status, String> {
+    Ok(state.status.snapshot())
+}
+
+/// UI 契約 `get_history`: 直近 [`crate::settings::HISTORY_CAPACITY`] 件。
+#[tauri::command]
+pub async fn get_history(state: tauri::State<'_, AppState>) -> Result<Vec<HistoryItem>, String> {
+    Ok(state.history.lock().await.items())
+}
+
+/// UI 契約 `copy_history_item`: 挿入失敗時の再利用向けにクリップボードへコピーする。
+#[tauri::command]
+pub async fn copy_history_item(state: tauri::State<'_, AppState>, id: String) -> Result<(), String> {
+    let text = {
+        let history = state.history.lock().await;
+        history.get(&id).map(|item| item.text.clone())
+    };
+    let text = text.ok_or_else(|| format!("履歴に id={id} の項目が見つからない"))?;
+    let mut clipboard = arboard::Clipboard::new().map_err(|e| e.to_string())?;
+    clipboard.set_text(text).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// UI 契約 `open_accessibility_settings`。
+#[tauri::command]
+pub async fn open_accessibility_settings() -> Result<(), String> {
+    crate::accessibility::open_settings()
+}
+
+async fn dictionary_endpoint(
+    app: &tauri::AppHandle,
+    state: &tauri::State<'_, AppState>,
+) -> Result<(String, u16, String, String), String> {
     let settings = state.settings.lock().await.clone();
     let fingerprint = settings
         .server_fingerprint_hex
         .clone()
         .ok_or_else(|| "証明書フィンガープリントが未承認".to_string())?;
     let (host, port) = rest::host_and_port(&settings.server_url).map_err(|e| e.to_string())?;
-    let token = settings::token::get()
+    let dir = settings_dir_path(app)?;
+    let token = settings::token::get(&dir)
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "トークンが未設定".to_string())?;
     Ok((host, port, fingerprint, token))
 }
 
 #[tauri::command]
-pub async fn get_dictionary(state: tauri::State<'_, AppState>) -> Result<Dictionary, String> {
-    let (host, port, fingerprint, token) = dictionary_endpoint(&state).await?;
+pub async fn get_dictionary(app: tauri::AppHandle, state: tauri::State<'_, AppState>) -> Result<Dictionary, String> {
+    let (host, port, fingerprint, token) = dictionary_endpoint(&app, &state).await?;
     rest::get_dictionary(&host, port, &fingerprint, &token)
         .await
         .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub async fn put_dictionary(state: tauri::State<'_, AppState>, dictionary: Dictionary) -> Result<(), String> {
-    let (host, port, fingerprint, token) = dictionary_endpoint(&state).await?;
+pub async fn put_dictionary(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    dictionary: Dictionary,
+) -> Result<(), String> {
+    let (host, port, fingerprint, token) = dictionary_endpoint(&app, &state).await?;
     rest::put_dictionary(&host, port, &fingerprint, &token, &dictionary)
         .await
         .map_err(|e| e.to_string())
@@ -261,6 +363,7 @@ mod tests {
     /// `pair` コマンド本体のうち settings/keyring への書き込みを含まない部分
     /// (a: TOFU 取得 → b: `POST /v1/pair` → c: フィンガープリント一致検証) が、
     /// ローカルの TLS モックサーバー越しに一連の流れとして通ることを確認する結合テスト。
+    /// サーバーが code 不要 (`code: None`) の運用になったことを前提に検証する。
     #[tokio::test]
     async fn pair_and_verify_succeeds_end_to_end_over_pinned_tls() {
         use rcgen::{generate_simple_self_signed, CertifiedKey};
@@ -314,6 +417,10 @@ mod tests {
             }
             let request_text = String::from_utf8_lossy(&raw).to_string();
             assert!(request_text.starts_with("POST /v1/pair HTTP/1.1"));
+            assert!(
+                !request_text.contains("\"code\""),
+                "code 不要のはずなのに code フィールドが送られている: {request_text}"
+            );
 
             let body = format!(
                 r#"{{"device":"test-device","token":"tok-xyz","fingerprint":"{response_fingerprint_colon_upper}"}}"#
@@ -328,7 +435,7 @@ mod tests {
         });
 
         let host = addr.ip().to_string();
-        let result = pair_and_verify(&host, addr.port(), "test-device", "123456").await;
+        let result = pair_and_verify(&host, addr.port(), "test-device", None).await;
 
         let response = result.expect("pair_and_verify が成功すること");
         assert_eq!(response.device, "test-device");
@@ -392,7 +499,7 @@ mod tests {
         });
 
         let host = addr.ip().to_string();
-        let result = pair_and_verify(&host, addr.port(), "test-device", "123456").await;
+        let result = pair_and_verify(&host, addr.port(), "test-device", None).await;
         let err = result.expect_err("フィンガープリント不一致で失敗するはず");
         assert!(err.contains("一致しない"), "予期しないエラー内容: {err}");
 

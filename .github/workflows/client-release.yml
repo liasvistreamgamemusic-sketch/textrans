@@ -1,0 +1,48 @@
+name: client-release
+# `client-v*` タグを push すると macOS (Apple Silicon) と Windows の配布物をビルドし、
+# GitHub Release に添付する。mac は署名なし (ad-hoc) — ローカルビルドと同じもの。
+on:
+  push:
+    tags: ["client-v*"]
+permissions:
+  contents: write
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            args: --target aarch64-apple-darwin
+          - os: windows-latest
+            args: ""
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.os == 'macos-latest' && 'aarch64-apple-darwin' || '' }}
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: client/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+        working-directory: client
+      - uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: client
+          tauriScript: pnpm tauri
+          tagName: ${{ github.ref_name }}
+          releaseName: voice-client ${{ github.ref_name }}
+          releaseBody: |
+            ## voice-client ${{ github.ref_name }}
+            - macOS: `.dmg` (署名なし。初回は右クリック → 開く)
+            - Windows: `.msi` / `-setup.exe` (SmartScreen の警告は「詳細情報 → 実行」)
+          releaseDraft: false
+          args: ${{ matrix.args }}

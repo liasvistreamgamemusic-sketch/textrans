@@ -16,6 +16,10 @@ dictionary:
 
 pairing:
   path: "~/voice/config/pairing.yaml"   # `voice-server pair` が書く6桁コードのハッシュ + 有効期限 (0600)
+  # "open" (既定): コード不要で device 名だけでトークンを発行する。LAN 内を ufw で閉じた
+  #   単一ユーザー環境向け — 外出先から VPN 経由で接続する場合は "code" に切り替えること。
+  # "code": 6桁コードが必須 (`voice-server pair` で発行)。
+  mode: "open"
 
 asr:
   backend: "faster_whisper"   # 初版の既定 (設計書 §4.2, §6.1)。実機確認済み

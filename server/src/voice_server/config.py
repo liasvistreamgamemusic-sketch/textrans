@@ -42,6 +42,9 @@ class DictionarySection(_PathSection):
 
 class PairingSection(_PathSection):
     path: Path = Path("~/voice/config/pairing.yaml").expanduser()
+    # "open": コード無しで device 名だけで無条件にトークンを発行する (LAN 内を ufw で閉じた
+    #   単一ユーザー環境向け。README「ペアリング」参照)。"code": 従来通り6桁コードが必須。
+    mode: Literal["open", "code"] = "open"
 
 
 class AsrSection(_PathSection):

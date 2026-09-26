@@ -10,17 +10,39 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 
-use tauri::AppHandle;
-use tokio::sync::mpsc;
+use serde::Serialize;
+use tauri::{AppHandle, Emitter};
+use tokio::sync::{mpsc, Mutex as AsyncMutex};
 use uuid::Uuid;
 
+use crate::accessibility;
 use crate::audio::{self, PreRollBuffer};
 use crate::insert::{self, FrontApp};
 use crate::overlay;
-use crate::protocol::{ClientMessage, ServerMessage};
-use crate::settings::{InsertMethod, Settings};
+use crate::protocol::{ClientMessage, Flag, Mode, ServerMessage, Timings};
+use crate::settings::{self, History, HistoryItem, InsertMethod, Settings};
 use crate::state::{Outcome, PressOutcome, StateMachine};
+use crate::status::StatusStore;
 use crate::ws::{OutgoingFrame, PendingQueue};
+
+/// `voice://result` (final 受信ごと) のイベント名。
+const RESULT_EVENT: &str = "voice://result";
+/// `voice://level` (録音中 50ms ごと、波形表示用) のイベント名。
+const LEVEL_EVENT: &str = "voice://level";
+/// `voice://insert_failed` のイベント名。
+const INSERT_FAILED_EVENT: &str = "voice://insert_failed";
+
+#[derive(Debug, Clone, Copy, Serialize)]
+struct LevelPayload {
+    rms: f32,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct InsertFailedPayload {
+    id: String,
+    reason: &'static str,
+    message: String,
+}
 
 /// `final` 待ちタイムアウト = 5秒 + 発話長の10% (design.md §5.4)。
 pub fn final_wait_timeout(utterance: Duration) -> Duration {
@@ -118,6 +140,8 @@ pub struct Orchestrator {
     events_tx: mpsc::UnboundedSender<OrchestratorEvent>,
     recordings: HashMap<Uuid, RecordingContext>,
     mic: MicHandle,
+    status: Arc<StatusStore>,
+    history: Arc<AsyncMutex<History>>,
 }
 
 impl Orchestrator {
@@ -126,6 +150,8 @@ impl Orchestrator {
         settings: Settings,
         outgoing: PendingQueue,
         events_tx: mpsc::UnboundedSender<OrchestratorEvent>,
+        status: Arc<StatusStore>,
+        history: Arc<AsyncMutex<History>>,
     ) -> Self {
         let mic = if settings.always_open_mic {
             Self::open_always_on_mic(&settings, &events_tx)
@@ -140,7 +166,15 @@ impl Orchestrator {
             events_tx,
             recordings: HashMap::new(),
             mic,
+            status,
+            history,
         }
+    }
+
+    /// UI 契約の `phase` を現在の状態機械に同期させ、変わっていれば `voice://status` を発行する
+    /// (発行自体の重複抑制は [`StatusStore`] 側が行う)。
+    fn sync_phase(&self) {
+        self.status.set_phase(&self.app, self.state.ui_phase().into());
     }
 
     /// 「マイクを常時開いておく」設定用に、アプリ起動時 (または設定変更時) にマイクを開く。
@@ -181,11 +215,35 @@ impl Orchestrator {
             OrchestratorEvent::CancelRequested => self.on_cancel(),
             OrchestratorEvent::AudioChunk(_id, bytes) => {
                 // 現行プロトコルは接続内で単一セッションのみ想定 (README に明記)。
+                self.emit_level_for_chunk(&bytes);
                 // `PendingQueue::push` は同期・infallible なので `log_on_err` は不要。
                 self.outgoing.push(OutgoingFrame::Pcm(bytes));
             }
             OrchestratorEvent::ServerMessage(msg) => self.on_server_message(msg).await,
             OrchestratorEvent::TimedOut(id) => self.on_timed_out(id).await,
+        }
+        // どの分岐でも状態機械が変わりうるので、最後に一括で UI 契約の phase を同期する
+        // (AudioChunk のような無変化のケースは StatusStore 側が無音で無視する)。
+        self.sync_phase();
+    }
+
+    /// UI 契約 `voice://level` (録音中 50ms ごと、波形表示用)。既存の 100ms PCM チャンクを
+    /// 前後半 (各約50ms) に分けて RMS を計算する — 新たに生の音声を別経路で取り出すのではなく
+    /// 「PCM から RMS を計算する」契約通り、既にルーティング済みのチャンクを再利用する。
+    fn emit_level_for_chunk(&self, bytes: &[u8]) {
+        let samples = audio::decode_pcm16le(bytes);
+        if samples.is_empty() {
+            return;
+        }
+        let mid = samples.len() / 2;
+        for half in [&samples[..mid], &samples[mid..]] {
+            if half.is_empty() {
+                continue;
+            }
+            let payload = LevelPayload { rms: audio::rms(half) };
+            if let Err(e) = self.app.emit(LEVEL_EVENT, payload) {
+                tracing::warn!("{LEVEL_EVENT} イベントの発行に失敗: {e}");
+            }
         }
     }
 
@@ -289,11 +347,19 @@ impl Orchestrator {
         match msg {
             ServerMessage::Final {
                 session_id,
+                raw_text,
                 text,
-                ..
-            } => self.finish_session(session_id, Some(text)).await,
+                mode,
+                flags,
+                timings,
+            } => {
+                self.record_history_if_non_empty(session_id, &raw_text, &text, mode, &flags, timings)
+                    .await;
+                self.finish_session(session_id, Some(text)).await;
+            }
             ServerMessage::Error { session_id, message, .. } => {
                 tracing::warn!("サーバーからエラー: {message}");
+                self.status.set_last_error(&self.app, Some(message));
                 if let Some(id) = session_id {
                     self.finish_session(id, None).await;
                 }
@@ -301,6 +367,37 @@ impl Orchestrator {
             ServerMessage::Ready { .. } | ServerMessage::Partial { .. } => {
                 // partial は表示専用 (design.md §3.2)。オーバーレイのテキスト更新は将来拡張。
             }
+        }
+    }
+
+    /// UI 契約 `voice://result` (final 受信ごと)。空発話 (挿入しない) は履歴に残さない。
+    /// 挿入が成功したかどうか (`inserted`) は後で判明するため、ここでは `false` で記録し、
+    /// [`perform_insert`] が成功したときに [`History::mark_inserted`] で更新する。
+    async fn record_history_if_non_empty(
+        &self,
+        session_id: Uuid,
+        raw_text: &str,
+        text: &str,
+        mode: Mode,
+        flags: &[Flag],
+        timings: Timings,
+    ) {
+        if text.is_empty() {
+            return;
+        }
+        let item = HistoryItem {
+            id: session_id.to_string(),
+            at: settings::to_iso8601_utc(std::time::SystemTime::now()),
+            mode,
+            text: text.to_string(),
+            raw_text: raw_text.to_string(),
+            flags: flags.to_vec(),
+            timings,
+            inserted: false,
+        };
+        self.history.lock().await.push(item.clone());
+        if let Err(e) = self.app.emit(RESULT_EVENT, item) {
+            tracing::warn!("{RESULT_EVENT} イベントの発行に失敗: {e}");
         }
     }
 
@@ -343,6 +440,18 @@ impl Orchestrator {
 
     async fn perform_insert(&mut self, id: Uuid, text: String) {
         let context = self.recordings.remove(&id);
+
+        // アクセシビリティ権限が無いと前面アプリ取得・キー送信のいずれもできない
+        // (実装計画: 「未許可のまま挿入を試みた場合は insert_failed{reason:"accessibility"}」)。
+        let ax_trusted = accessibility::is_trusted(false);
+        self.status.set_ax_trusted(&self.app, ax_trusted);
+        if !ax_trusted {
+            tracing::warn!("アクセシビリティ権限が未許可のため挿入をスキップした");
+            self.emit_insert_failed(id, "accessibility", "アクセシビリティ権限が未許可のため挿入できなかった");
+            self.finish_insert(id);
+            return;
+        }
+
         let front_app = context
             .as_ref()
             .map(|c| c.front_app.clone())
@@ -355,9 +464,12 @@ impl Orchestrator {
         };
 
         match result {
-            Ok(insert::InsertOutcome::Inserted) => {}
+            Ok(insert::InsertOutcome::Inserted) => {
+                self.history.lock().await.mark_inserted(&id.to_string());
+            }
             Ok(insert::InsertOutcome::SkippedFrontAppChanged) => {
                 tracing::info!("前面アプリが押下時と異なるため挿入を見送った");
+                self.emit_insert_failed(id, "front_app_changed", "前面アプリが録音開始時と異なるため挿入を見送った");
                 log_on_err(
                     overlay::show_status(&self.app, overlay::OverlayStatus::Failed),
                     "オーバーレイ状態の更新に失敗",
@@ -365,6 +477,7 @@ impl Orchestrator {
             }
             Err(e) => {
                 tracing::error!("挿入に失敗: {e}");
+                self.emit_insert_failed(id, "other", &e.to_string());
                 log_on_err(
                     overlay::show_status(&self.app, overlay::OverlayStatus::Failed),
                     "オーバーレイ状態の更新に失敗",
@@ -372,6 +485,23 @@ impl Orchestrator {
             }
         }
 
+        self.finish_insert(id);
+    }
+
+    /// UI 契約 `voice://insert_failed`。
+    fn emit_insert_failed(&self, id: Uuid, reason: &'static str, message: &str) {
+        let payload = InsertFailedPayload {
+            id: id.to_string(),
+            reason,
+            message: message.to_string(),
+        };
+        if let Err(e) = self.app.emit(INSERT_FAILED_EVENT, payload) {
+            tracing::warn!("{INSERT_FAILED_EVENT} イベントの発行に失敗: {e}");
+        }
+    }
+
+    /// 挿入処理 (成功・見送り・失敗のいずれでも) の終わりに必ず行う後処理。
+    fn finish_insert(&mut self, id: Uuid) {
         self.state.on_insert_finished(id);
         if self.state.is_idle() {
             log_on_err(overlay::hide(&self.app), "オーバーレイの非表示に失敗");

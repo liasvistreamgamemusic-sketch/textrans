@@ -1,0 +1,73 @@
+.nav {
+  display: flex;
+  flex-direction: column;
+  width: 176px;
+  flex: none;
+  background: var(--color-bg);
+  border-right: 1px solid var(--color-border);
+  padding: var(--space-lg) var(--space-sm);
+  gap: var(--space-xxs);
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: 0 var(--space-sm) var(--space-lg);
+  color: var(--color-on-dark);
+  font-weight: 600;
+  font-size: var(--fs-body-md);
+  letter-spacing: var(--ls-heading);
+}
+
+.mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: var(--radius-sm);
+  background: var(--color-primary);
+  color: var(--color-on-primary);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  height: 32px;
+  padding: 0 var(--space-sm);
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-body-sm);
+  color: var(--color-text-secondary);
+  transition: background var(--duration-fast) var(--ease-out), color var(--duration-fast) var(--ease-out);
+  position: relative;
+}
+
+.item:hover {
+  color: var(--color-on-dark);
+  background: var(--color-surface);
+}
+
+.item[aria-current="page"] {
+  color: var(--color-on-dark);
+  background: var(--color-surface-2);
+}
+
+.item[aria-current="page"]::before {
+  content: "";
+  position: absolute;
+  left: -8px;
+  top: 50%;
+  translate: 0 -50%;
+  width: 3px;
+  height: 14px;
+  border-radius: var(--radius-full);
+  background: var(--color-accent);
+}
+
+.spacer {
+  flex: 1;
+}

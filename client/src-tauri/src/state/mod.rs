@@ -205,6 +205,32 @@ pub enum OverlaySummary {
     Processing,
 }
 
+/// UI 契約 (`voice://status` の `phase`) 用の粒度。[`OverlaySummary`] より1段階細かく、
+/// `WaitingFinal`/`ReadyToInsert` を「待機中」、`Inserting` を独立した状態として区別する。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UiPhase {
+    Idle,
+    Recording,
+    Waiting,
+    Inserting,
+}
+
+impl StateMachine {
+    /// UI 契約用のフェーズ。複数の発話が並行している場合は、最も目立つ状態を優先する
+    /// (挿入中 > 録音中 > 待機中 > アイドル)。
+    pub fn ui_phase(&self) -> UiPhase {
+        if self.sessions.values().any(|s| matches!(s.phase, Phase::Inserting { .. })) {
+            UiPhase::Inserting
+        } else if self.sessions.values().any(|s| s.phase == Phase::Recording) {
+            UiPhase::Recording
+        } else if !self.sessions.is_empty() {
+            UiPhase::Waiting
+        } else {
+            UiPhase::Idle
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -374,6 +400,53 @@ mod tests {
             Outcome::Insert { id: second, text: "2番目".to_string() }
         );
         assert!(sm.phase_of(first).is_none());
+    }
+
+    #[test]
+    fn ui_phase_is_idle_when_no_sessions() {
+        let sm = StateMachine::new();
+        assert_eq!(sm.ui_phase(), UiPhase::Idle);
+    }
+
+    #[test]
+    fn ui_phase_is_recording_while_a_session_is_recording() {
+        let mut sm = StateMachine::new();
+        sm.on_hotkey_press(Mode::Clean);
+        assert_eq!(sm.ui_phase(), UiPhase::Recording);
+    }
+
+    #[test]
+    fn ui_phase_is_waiting_after_release_before_final() {
+        let mut sm = StateMachine::new();
+        let PressOutcome::Started(id) = sm.on_hotkey_press(Mode::Clean) else {
+            panic!()
+        };
+        sm.on_hotkey_release();
+        assert_eq!(sm.phase_of(id), Some(&Phase::WaitingFinal));
+        assert_eq!(sm.ui_phase(), UiPhase::Waiting);
+    }
+
+    #[test]
+    fn ui_phase_is_inserting_once_advanced_to_front() {
+        let mut sm = StateMachine::new();
+        let PressOutcome::Started(id) = sm.on_hotkey_press(Mode::Clean) else {
+            panic!()
+        };
+        sm.on_hotkey_release();
+        sm.on_final_received(id, "テスト".to_string());
+        assert_eq!(sm.ui_phase(), UiPhase::Inserting);
+    }
+
+    #[test]
+    fn ui_phase_prioritizes_recording_over_waiting_when_both_present() {
+        let mut sm = StateMachine::new();
+        let PressOutcome::Started(first) = sm.on_hotkey_press(Mode::Clean) else {
+            panic!()
+        };
+        sm.on_hotkey_release();
+        assert_eq!(sm.phase_of(first), Some(&Phase::WaitingFinal));
+        sm.on_hotkey_press(Mode::Clean); // 2番目を録音中に
+        assert_eq!(sm.ui_phase(), UiPhase::Recording);
     }
 
     #[test]

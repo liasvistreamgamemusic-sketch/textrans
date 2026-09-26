@@ -1,0 +1,20 @@
+.row {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.key {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 20px;
+  min-width: 20px;
+  padding: 0 var(--space-xs);
+  border-radius: var(--radius-xs);
+  background: linear-gradient(180deg, var(--gradient-keycap-start), var(--gradient-keycap-end));
+  border: 1px solid var(--color-border);
+  color: var(--color-text-body);
+  font-family: var(--font-mono);
+  font-size: var(--fs-caption-md);
+}

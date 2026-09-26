@@ -1,0 +1,21 @@
+.wave {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  height: 48px;
+}
+
+.bar {
+  width: 3px;
+  min-height: 4px;
+  border-radius: var(--radius-full);
+  background: var(--color-accent);
+  transform-origin: center;
+  transition: transform var(--duration-fast) var(--ease-snappy), background var(--duration-base) var(--ease-out);
+}
+
+.wave[data-active="false"] .bar {
+  background: var(--color-text-tertiary);
+  transform: scaleY(0.12) !important;
+}

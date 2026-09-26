@@ -20,7 +20,7 @@ from .conftest import StubVadClassifier
 DEVICE_NAME = "test-device"
 
 
-def _build_app(tmp_path, **config_overrides):
+def _build_app(tmp_path, pairing_mode="code", **config_overrides):
     cert_path = tmp_path / "tls" / "server.crt"
     key_path = tmp_path / "tls" / "server.key"
     ensure_certificate(cert_path, key_path)
@@ -28,7 +28,7 @@ def _build_app(tmp_path, **config_overrides):
         server={"tls_cert_path": cert_path, "tls_key_path": key_path},
         tokens={"path": tmp_path / "tokens.yaml"},
         dictionary={"path": tmp_path / "dictionary.yaml"},
-        pairing={"path": tmp_path / "pairing.yaml"},
+        pairing={"path": tmp_path / "pairing.yaml", "mode": pairing_mode},
         asr={"backend": "dummy"},
         **config_overrides,
     )
@@ -126,3 +126,44 @@ def test_token_issued_via_pair_works_for_v1_info(tmp_path) -> None:
 
     info_response = client.get("/v1/info", headers={"Authorization": f"Bearer {token}"})
     assert info_response.status_code == 200
+
+
+def test_pair_open_mode_without_code_returns_token(tmp_path) -> None:
+    app, cert_path = _build_app(tmp_path, pairing_mode="open")
+    client = TestClient(app)
+
+    response = client.post("/v1/pair", json={"device": DEVICE_NAME})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert set(body) == {"device", "token", "fingerprint"}
+    assert body["device"] == DEVICE_NAME
+    assert body["fingerprint"] == compute_fingerprint(cert_path)
+    assert app.state.voice.token_store.verify(body["token"]) == DEVICE_NAME
+
+
+def test_pair_open_mode_ignores_code(tmp_path) -> None:
+    app, _ = _build_app(tmp_path, pairing_mode="open")
+    client = TestClient(app)
+
+    response = client.post("/v1/pair", json={"device": DEVICE_NAME, "code": "000000"})
+
+    assert response.status_code == 200
+    assert app.state.voice.token_store.verify(response.json()["token"]) == DEVICE_NAME
+
+
+def test_pair_open_mode_reissue_for_same_device_revokes_old_token(tmp_path) -> None:
+    app, _ = _build_app(tmp_path, pairing_mode="open")
+    client = TestClient(app)
+
+    first = client.post("/v1/pair", json={"device": DEVICE_NAME})
+    old_token = first.json()["token"]
+
+    second = client.post("/v1/pair", json={"device": DEVICE_NAME})
+    new_token = second.json()["token"]
+
+    assert old_token != new_token
+    info_with_old_token = client.get("/v1/info", headers={"Authorization": f"Bearer {old_token}"})
+    assert info_with_old_token.status_code == 401
+    info_with_new_token = client.get("/v1/info", headers={"Authorization": f"Bearer {new_token}"})
+    assert info_with_new_token.status_code == 200
