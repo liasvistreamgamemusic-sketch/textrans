@@ -245,10 +245,14 @@ pub fn run() {
         .run(|app_handle, event| {
             // macOS: Dock アイコン (ウィンドウを閉じた後は非表示) を再クリックしたときの再表示。
             // ウィンドウを ✕ で閉じても終了しない (実機フィードバック1) ぶん、この経路が無いと
-            // 常駐アプリなのに Dock からは二度と開けなくなる。
+            // 常駐アプリなのに Dock からは二度と開けなくなる。`RunEvent::Reopen` は macOS 専用
+            // (Windows ではビルドエラーになる — CI で判明)。
+            #[cfg(target_os = "macos")]
             if let tauri::RunEvent::Reopen { .. } = event {
                 tray::show_main_window(app_handle);
             }
+            #[cfg(not(target_os = "macos"))]
+            let _ = (app_handle, event);
         });
 }
 
