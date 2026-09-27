@@ -70,6 +70,12 @@ export default function HistoryList({ items, failReasons }: HistoryListProps) {
                     <span>{MODE_LABEL[item.mode]}</span>
                     <span>·</span>
                     <span>{item.timings.total_ms}ms</span>
+                    {item.flags.includes("llm_skipped") && (
+                      <Badge tone="neutral">LLM 省略 (短文)</Badge>
+                    )}
+                    {item.flags.includes("llm_rejected") && (
+                      <Badge tone="warning">LLM 出力を却下 → 生テキスト</Badge>
+                    )}
                   </div>
                 </div>
                 {failReason ? (
