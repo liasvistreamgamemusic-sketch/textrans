@@ -100,6 +100,10 @@ class Utterance:
                 if self.cancelled:
                     continue
                 text = await self._transcribe(item)
+                # 認識中に cancel されたセグメントの結果は捨てる (設計書 §3.2: cancel 後は何も返さない)。
+                # CI で end→cancel 直後に partial が漏れて次の発話の ready と入れ違う回帰があった。
+                if self.cancelled:
+                    continue
                 if text:
                     self._raw_parts.append(text)
                     self._prev_tail = text[-self._context_chars :] if self._context_chars > 0 else ""
