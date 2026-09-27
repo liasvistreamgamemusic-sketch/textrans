@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- macOS メニューバー用テンプレート画像 (icon_as_template)。単色 (黒) + アルファのみ。
+       source.svg のマイク部分のみを抽出し、背景の角丸矩形とグラデーションは省いた。 -->
+  <rect x="422" y="228" width="180" height="320" rx="90" fill="#000000"/>
+  <path
+    d="M 330 460
+       V 520
+       A 182 182 0 0 0 694 520
+       V 460"
+    fill="none"
+    stroke="#000000"
+    stroke-width="44"
+    stroke-linecap="round"
+  />
+  <rect x="490" y="700" width="44" height="120" rx="22" fill="#000000"/>
+  <rect x="410" y="806" width="204" height="40" rx="20" fill="#000000"/>
+</svg>

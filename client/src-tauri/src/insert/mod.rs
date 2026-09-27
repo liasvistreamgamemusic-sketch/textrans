@@ -128,6 +128,32 @@ pub async fn insert_via_direct_type(
     Ok(InsertOutcome::Inserted)
 }
 
+/// 挿入直後に、挿入した範囲を選択状態にする (design.md §5.6、既定オフの設定がオンのときのみ)。
+/// 貼り付け完了後に呼ぶ想定 (クリップボード貼り付け経由の挿入のみ対応)。
+///
+/// `char_count` は UTF-16 コード単位ではなく書記素/文字数 (呼び出し側で `text.chars().count()`
+/// を渡す) —— 改行を含む発話でも Shift+← は行をまたいで戻るので、そのまま戻る回数として使える。
+/// ⚠️ サロゲートペア (絵文字等) を含む文字は mac/Windows とも Shift+← 1回で戻るはずだが、
+/// 実機での確認はしていない (README に明記)。
+pub fn select_inserted_text(char_count: usize) -> Result<(), InsertError> {
+    if char_count == 0 {
+        return Ok(());
+    }
+    let mut enigo = Enigo::new(&Settings::default()).map_err(|e| InsertError::Keyboard(e.to_string()))?;
+    enigo
+        .key(Key::Shift, Direction::Press)
+        .map_err(|e| InsertError::Keyboard(e.to_string()))?;
+    for _ in 0..char_count {
+        enigo
+            .key(Key::LeftArrow, Direction::Click)
+            .map_err(|e| InsertError::Keyboard(e.to_string()))?;
+    }
+    enigo
+        .key(Key::Shift, Direction::Release)
+        .map_err(|e| InsertError::Keyboard(e.to_string()))?;
+    Ok(())
+}
+
 fn send_paste_shortcut() -> Result<(), InsertError> {
     let mut enigo = Enigo::new(&Settings::default()).map_err(|e| InsertError::Keyboard(e.to_string()))?;
     #[cfg(target_os = "macos")]

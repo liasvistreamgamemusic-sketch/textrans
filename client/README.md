@@ -18,6 +18,7 @@ client/
 │   │   ├── status/      React 側と共有する `Status` の一元管理 (`voice://status`)
 │   │   ├── accessibility/  macOS アクセシビリティ権限の確認・誘導
 │   │   ├── overlay/     状態表示オーバーレイウィンドウ
+│   │   ├── tray.rs      メニューバー (mac) / タスクトレイ (Windows) の常駐アイコン
 │   │   ├── orchestrator.rs  上記をつなぐ実行ループ
 │   │   └── commands.rs  React から呼ぶ Tauri コマンド
 │   └── tauri.conf.json
@@ -71,6 +72,77 @@ TOFU からやり直せる (UI 契約)。
 設定ファイル (`settings.json`) と同じディレクトリの `token` ファイル (権限 0600、所有者のみ読み書き可)。
 keychain は使わない: ad-hoc 署名の .app はビルドごとに別アプリ扱いになり、macOS の keychain が毎回
 確認ダイアログを出す・既存項目を更新できないことを実機で確認したため (`settings::token` の DECISION)。
+
+## 常駐アプリの挙動 (トレイ・ウィンドウを閉じる・オーバーレイ透過・挿入後の選択)
+
+実機フィードバック4件への対応 (`tray.rs`/`lib.rs`/`overlay/mod.rs`/`insert/mod.rs`)。
+
+### ウィンドウを ✕ で閉じても終了しない
+
+メインウィンドウの `CloseRequested` (`lib.rs` の `setup` 内、`window.on_window_event`) で
+`api.prevent_close()` してから `hide()` するだけにした。アプリ自体は終了しない (常駐)。
+再表示は次の3経路:
+
+- トレイメニューの「voice-client を開く」
+- タスクトレイ (Windows) のアイコン左クリック
+- macOS の Dock アイコン再クリック (`RunEvent::Reopen`、`lib.rs` の `run()` の `run` クロージャ)
+
+いずれも `tray::show_main_window` に集約している (`window.show()` + `set_focus()`)。
+
+### メニューバー (mac) / タスクトレイ (Windows) の常駐アイコン
+
+`tauri::tray::TrayIconBuilder` (Cargo.toml で `tray-icon`/`image-png` フィーチャーを有効化) で
+起動時に1つ作る (`tray::build_tray`、`app.manage()` でアプリの生存期間ずっと保持 — `TrayIcon` は
+参照カウント式で最後の1つが drop されるとアイコンも消えるため)。
+
+メニュー構成: 「voice-client を開く」/ 区切り / 状態行 (無効項目。`voice://status` 更新を
+`app.listen` で購読して `set_text` する) / 区切り / 「終了」(`app.exit(0)`、本当に終了する)。
+Windows は左クリックでもウィンドウを開く (`on_tray_icon_event` で `MouseButton::Left` を検知、
+`#[cfg(windows)]` 限定。mac は既定の `show_menu_on_left_click(true)` でクリック即メニュー表示なので
+二重にウィンドウを開かない)。
+
+アイコンは `src-tauri/icons/tray/*.svg` (`source.svg` のマイク部分だけを抜き出し、背景の角丸矩形と
+グラデーションを外したもの) から `pnpm tauri icon <svg> --png <size> -o <dir>` で生成した PNG を
+`include_bytes!` でバイナリに埋め込んでいる (バンドルのリソース解決に依存しない)。
+
+- macOS: 22×22 (`idle-template.png`) / @2x 44×44 (`idle-template@2x.png`) の単色 (黒+アルファ)
+  テンプレート画像。`icon_as_template`/`set_icon_with_as_template` で渡し、OS がメニューバーの
+  配色 (ライト/ダーク) に合わせて塗り直す。録音中は赤い点を保持したいのでテンプレートにできない
+  ため、非テンプレートの `recording-mac.png`/`recording-mac@2x.png` (ブランド色 + 赤い点) に切り替える。
+- Windows: 常にカラー PNG (`idle-color.png`/`recording-color.png`、32×32)。テンプレート画像の概念が
+  無いため。
+
+macOS では Dock アイコンを出さない常駐アプリにしている: `app.set_activation_policy(Accessory)` を
+ウィンドウを隠すとき (`CloseRequested`) に呼び、`show_main_window` (開くとき) で `Regular` に戻す
+(戻すと Cmd+Tab から再度見えるようになる)。起動直後はウィンドウが表示された状態 (`tauri.conf.json`
+の `visible: true` を維持) なので既定の `Regular` のままで問題ない。
+
+### Windows: オーバーレイ (録音中/処理中) の白い四角
+
+`overlay::ensure_overlay_window` の `WebviewWindowBuilder` に `.transparent(true)` と
+`.background_color(tauri::window::Color(0, 0, 0, 0))` を追加した。WebView2 (Windows) は既定で
+白背景を描くため、これが無いと `overlay.html` の透明な `<body>` の外側が白い四角として見える。
+`.focusable(false)` も追加し、クリックしてもフォーカスを奪わないようにした
+(既存の `.focused(false)` は作成時点の初期フォーカス状態だけだったため)。
+
+macOS で `.transparent()` を使うには Cargo フィーチャー `macos-private-api` と
+`tauri.conf.json` の `app.macOSPrivateApi: true` が両方必要 (tauri のドキュメントどおり)、
+今回両方追加した。
+
+⚠️ **Windows 実機は無いため未検証。** `transparent`/`background_color` の API 呼び出し自体は
+docs.rs (`tauri` 2.11.6 のソース) で確認済みだが、実機での見た目の確認はしていない。
+
+### 挿入後に選択状態にする (design.md §5.6)
+
+設定 (既定オフ) がオンのとき、**クリップボード貼り付けによる挿入が完了した後**、挿入した文字数分
+`Shift+←` を送って選択状態にする (`insert::select_inserted_text`、`orchestrator::perform_insert`
+から呼ぶ)。直接送出 (`DirectType`) は対象外 (貼り付けと同じ「範囲選択」の意味を持たせられないため)。
+
+文字数は UTF-16 コード単位ではなく **書記素/文字数** (`text.chars().count()`) を使う。改行を含む
+発話でも `Shift+←` は行をまたいで戻るので、そのまま戻る回数として使える。
+
+⚠️ サロゲートペア (絵文字等) を含む文字が mac/Windows とも `Shift+←` 1回で戻ることは未検証
+(実機での確認が必要)。
 
 ## macOS の権限
 
@@ -134,7 +206,7 @@ keychain は使わない: ad-hoc 署名の .app はビルドごとに別アプ�
 
 ## テスト内容と検証結果
 
-`cargo test` (2026-09-27、macOS / rustc 1.92 / cargo 1.92 で実行、96 tests):
+`cargo test` (2026-09-27、macOS / rustc 1.92 / cargo 1.92 で実行、97 tests):
 
 - `protocol::tests`: `protocol/fixtures/valid/*.json` の全件を `ClientMessage`/`ServerMessage`/`Dictionary` へ
   デシリアライズ→シリアライズ→再デシリアライズしてラウンドトリップを確認。`protocol/fixtures/invalid/*.json` は
@@ -208,8 +280,10 @@ keychain は使わない: ad-hoc 署名の .app はビルドごとに別アプ�
   `pnpm tauri icon src-tauri/icons/source.svg` で生成済みで、`tauri.conf.json` の
   `bundle.icon` に列挙し、macOS 用 `icon.icns` の生成も確認済み。プレースホルダーの単色 PNG は
   置き換えた。
-- 「挿入後に挿入範囲を選択状態にする」設定 (§5.6) は設定項目として保持しているが、実際に選択状態にする
-  Shift+←の送出ロジックは未実装 (`insert` モジュールに追加する形で拡張できる)。
+- 「挿入後に挿入範囲を選択状態にする」設定 (§5.6) の Shift+← 送出ロジックは実装した
+  (`insert::select_inserted_text`、上記「常駐アプリの挙動」節参照) が、実機での動作確認
+  (実際に選択状態になるか・mac の Ctrl+Shift+R / Windows の変換キーで IME 再変換できるか) は
+  していない。
 - IME 未確定文字が残った状態での貼り付け挙動 (design.md 8.2 の指摘15) は手動 E2E 前提のため未確認。
 - **設定のライブ反映**: 実行中に設定画面で保存した値 (ホットキー・マイクデバイス・常時オープン等) は
   `Orchestrator` に届かず、次回起動まで反映されない (今回のレビュー対応で見つけた既知の制約。

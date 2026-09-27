@@ -11,6 +11,7 @@
 //! - [`status`][]: React 側と共有する `Status` の一元管理 (`voice://status`)
 //! - [`accessibility`][]: macOS アクセシビリティ権限の確認
 //! - [`overlay`][]: 状態表示オーバーレイウィンドウ
+//! - [`tray`][]: メニューバー (macOS) / タスクトレイ (Windows) の常駐アイコン
 //! - [`orchestrator`][]: 上記をつなぐ実行ループ
 //! - [`commands`][]: React (設定画面・辞書エディタ) から呼ばれる Tauri コマンド
 
@@ -25,6 +26,7 @@ pub mod rest;
 pub mod settings;
 pub mod state;
 pub mod status;
+pub mod tray;
 pub mod ws;
 
 use std::path::PathBuf;
@@ -157,18 +159,38 @@ pub fn run() {
 
             overlay::ensure_overlay_window(&handle)?;
 
+            // 常駐アプリ化 (実機フィードバック1・2): メニューバー/タスクトレイの常駐アイコンを
+            // 常に用意し、メインウィンドウは ✕ で閉じても終了せず隠すだけにする
+            // (再表示はトレイの「開く」・macOS の Dock 再クリック `RunEvent::Reopen` から)。
+            // `TrayIcon` は参照カウント式で最後の1つが drop されるとアイコンも消える
+            // (tauri のドキュメントどおり) ので、`app.manage` でアプリの生存期間ずっと保持する。
+            app.manage(tray::build_tray(&handle)?);
+            if let Some(window) = handle.get_webview_window("main") {
+                let window_for_close = window.clone();
+                window.on_window_event(move |event| {
+                    if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                        api.prevent_close();
+                        if let Err(e) = window_for_close.hide() {
+                            tracing::warn!("メインウィンドウの非表示に失敗: {e}");
+                        }
+                        #[cfg(target_os = "macos")]
+                        {
+                            let app_handle = window_for_close.app_handle();
+                            if let Err(e) =
+                                app_handle.set_activation_policy(tauri::ActivationPolicy::Accessory)
+                            {
+                                tracing::warn!("Dock アイコンの非表示切り替えに失敗: {e}");
+                            }
+                        }
+                    }
+                });
+            }
+
             // 未ペアリングで起動した場合は、常駐アプリとして隠れている前提のメインウィンドウを
             // 自動で前面に出す (手動ペアリング・サーバーが code モードの場合の導線として残す)。
             // 自動ペアリング (下記 `auto_pair_forever`) が成功すればすぐに閉じられる想定。
             if !paired {
-                if let Some(window) = handle.get_webview_window("main") {
-                    if let Err(e) = window.show() {
-                        tracing::warn!("メインウィンドウの表示に失敗: {e}");
-                    }
-                    if let Err(e) = window.set_focus() {
-                        tracing::warn!("メインウィンドウのフォーカスに失敗: {e}");
-                    }
-                }
+                tray::show_main_window(&handle);
             }
 
             let orchestrator_settings = {
@@ -218,8 +240,16 @@ pub fn run() {
 
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("tauri アプリケーションの起動に失敗");
+        .build(tauri::generate_context!())
+        .expect("tauri アプリケーションの起動に失敗")
+        .run(|app_handle, event| {
+            // macOS: Dock アイコン (ウィンドウを閉じた後は非表示) を再クリックしたときの再表示。
+            // ウィンドウを ✕ で閉じても終了しない (実機フィードバック1) ぶん、この経路が無いと
+            // 常駐アプリなのに Dock からは二度と開けなくなる。
+            if let tauri::RunEvent::Reopen { .. } = event {
+                tray::show_main_window(app_handle);
+            }
+        });
 }
 
 /// 起動時の自動ペアリング (実装計画: 「code なしで自動実行する。失敗したら5秒→最大60秒の

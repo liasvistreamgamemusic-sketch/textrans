@@ -466,6 +466,18 @@ impl Orchestrator {
         match result {
             Ok(insert::InsertOutcome::Inserted) => {
                 self.history.lock().await.mark_inserted(&id.to_string());
+                // design.md §5.6 (既定オフ)。クリップボード貼り付け完了後のみ対応
+                // (直接送出は enigo が文字を打ち終えた時点でカーソル位置しか分からず、
+                // 貼り付けと同じ「範囲選択」の意味を持たせられないため対象外)。
+                if self.settings.select_after_insert
+                    && matches!(self.settings.insert_method, InsertMethod::ClipboardPaste)
+                {
+                    // UTF-16 コード単位ではなく書記素/文字数 (insert::select_inserted_text のドキュメント参照)。
+                    let char_count = text.chars().count();
+                    if let Err(e) = insert::select_inserted_text(char_count) {
+                        tracing::warn!("挿入後の選択状態化に失敗: {e}");
+                    }
+                }
             }
             Ok(insert::InsertOutcome::SkippedFrontAppChanged) => {
                 tracing::info!("前面アプリが押下時と異なるため挿入を見送った");

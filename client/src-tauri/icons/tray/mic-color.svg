@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- Windows タスクトレイ用カラー画像。source.svg のブランド色 (#1c2b6b) のマイクのみ、
+       背景の角丸矩形とグラデーションは省いて透過にした。 -->
+  <rect x="422" y="228" width="180" height="320" rx="90" fill="#1c2b6b"/>
+  <path
+    d="M 330 460
+       V 520
+       A 182 182 0 0 0 694 520
+       V 460"
+    fill="none"
+    stroke="#1c2b6b"
+    stroke-width="44"
+    stroke-linecap="round"
+  />
+  <rect x="490" y="700" width="44" height="120" rx="22" fill="#1c2b6b"/>
+  <rect x="410" y="806" width="204" height="40" rx="20" fill="#1c2b6b"/>
+</svg>

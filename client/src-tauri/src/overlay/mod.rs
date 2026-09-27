@@ -43,8 +43,15 @@ pub fn ensure_overlay_window(app: &AppHandle) -> tauri::Result<()> {
         .always_on_top(true)
         .skip_taskbar(true)
         .focused(false)
+        // クリックしてもフォーカスを奪わない (実機フィードバック3: `.focused(false)` は
+        // 作成時点の初期フォーカス状態だけなので、これも合わせて無効にする)。
+        .focusable(false)
         .visible(false)
         .shadow(false)
+        .transparent(true)
+        // WebView2 (Windows) は既定で白背景を描くため、透明を明示する
+        // (実機フィードバック3。macOS は `transparent(true)` だけで十分だが害はない)。
+        .background_color(tauri::window::Color(0, 0, 0, 0))
         .build()?;
     Ok(())
 }

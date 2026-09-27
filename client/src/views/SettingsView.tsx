@@ -113,7 +113,10 @@ export default function SettingsView() {
             ]}
           />
         </FormRow>
-        <FormRow title="挿入後に選択状態にする" hint="範囲選択でIME再変換しやすくする (既定オフ)">
+        <FormRow
+          title="挿入後に選択状態にする"
+          hint="オンにすると挿入したテキストが選択された状態になり、mac は Ctrl+Shift+R、Windows は変換キーで IME 再変換できる (既定オフ)"
+        >
           <Toggle
             label="挿入後に選択状態にする"
             checked={settings.select_after_insert}

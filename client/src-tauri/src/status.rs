@@ -5,7 +5,7 @@
 //! [`overlay`](crate::overlay) と同様、実 I/O (イベント発行) は呼び出し側から渡された
 //! `AppHandle` を都度使う (`StatusStore` 自体は `AppHandle` を保持しない)。
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::sync::Mutex as StdMutex;
 use tauri::{AppHandle, Emitter};
 
@@ -14,7 +14,8 @@ use crate::state::UiPhase;
 pub const STATUS_EVENT: &str = "voice://status";
 
 /// UI 契約の `phase` (`"idle"|"recording"|"waiting"|"inserting"`)。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+/// `Deserialize` はトレイ (`crate::tray`) が `voice://status` の payload を読み戻すために必要。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Phase {
     Idle,
@@ -34,7 +35,7 @@ impl From<UiPhase> for Phase {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Status {
     pub connected: bool,
     pub paired: bool,
