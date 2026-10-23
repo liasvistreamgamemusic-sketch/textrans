@@ -82,6 +82,7 @@ voice-server serve --config ~/voice/config/server.yaml
 | `asr` | `model` / `model_path` / `compute_type` / `device` | `large-v3-turbo` / なし / `float16` / `cuda` | ASR モデル |
 | `asr` | `strategy` | `segmented` | `segmented` / `whole` |
 | `asr` | `context_chars` | `100` | 前セグメント末尾の文脈長 |
+| `asr` | `vad_filter` / `no_speech_threshold` | `true` / `0.6` | 無音幻覚 (「ご視聴ありがとうございました」等) の抑止。faster-whisper 内蔵 VAD で無音を除き、`no_speech_prob` が閾値を超えるセグメントを捨てる |
 | `vad` | `silence_ms` / `max_segment_s` / `min_segment_s` | `600` / `15` / `1` | セグメント分割 |
 | `llm` | `base_url` | `http://127.0.0.1:8081` | llama-server (OpenAI互換) |
 | `llm` | `timeout_base_ms` / `timeout_per_char_ms` | `1500` / `15` | タイムアウト計算式 |

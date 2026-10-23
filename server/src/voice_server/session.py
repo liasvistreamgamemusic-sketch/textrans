@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from .dictionary import apply_fixed_replacements, build_asr_context
-from .segmenter import Segmenter
+from .segmenter import Segment, Segmenter
 from .text_rules import detect_repetition
 
 if TYPE_CHECKING:
@@ -66,14 +66,26 @@ class Utterance:
         self.total_samples += len(pcm)
         is_speech = self._vad_session.is_speech(pcm, self.sample_rate)
         for segment in self._segmenter.push(pcm, is_speech):
-            await self._queue.put(segment.pcm)
+            await self._enqueue_segment(segment)
 
     async def finish(self) -> None:
         self.end_received_at = time.monotonic()
         tail = self._segmenter.flush()
         if tail is not None:
-            await self._queue.put(tail.pcm)
+            await self._enqueue_segment(tail)
         await self._queue.put(_END_OF_UTTERANCE)
+
+    async def _enqueue_segment(self, segment: Segment) -> None:
+        # 無音だけのセグメント (末尾の残りや無言のままのキー押下) は ASR に渡さない。
+        # Whisper は無音に対して「ご視聴ありがとうございました」等の定型句を幻覚する (設計書 §4.3)。
+        if not segment.has_speech:
+            logger.debug(
+                "無音のみのセグメントを ASR に渡しません (session_id=%s, samples=%d)",
+                self.session_id,
+                segment.sample_count,
+            )
+            return
+        await self._queue.put(segment.pcm)
 
     async def wait_done(self, timeout: float) -> bool:
         try:

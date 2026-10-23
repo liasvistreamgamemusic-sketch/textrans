@@ -29,6 +29,8 @@ asr:
   context_chars: 100           # 前セグメント末尾の文字数を次の文脈として渡す
   compute_type: "float16"      # RTX 2070 SUPER (Turing) は BF16 非対応
   device: "cuda"
+  vad_filter: true             # faster-whisper 内蔵 VAD で前後の無音を除いてから認識する (無音幻覚の抑止)
+  no_speech_threshold: 0.6     # no_speech_prob がこれを超える Whisper セグメントは捨てる (0〜1、小さいほど厳しい)
 
 vad:
   silence_ms: 600

@@ -54,3 +54,49 @@ def test_flush_returns_remaining_buffer() -> None:
 def test_flush_returns_none_when_empty() -> None:
     seg = Segmenter(sample_rate=SAMPLE_RATE, silence_ms=600, max_segment_s=15, min_segment_s=1)
     assert seg.flush() is None
+
+
+def test_segment_without_speech_is_flagged() -> None:
+    seg = Segmenter(sample_rate=SAMPLE_RATE, silence_ms=600, max_segment_s=15, min_segment_s=1)
+    segments = seg.push(_chunk(1500), is_speech=False)
+    segments += seg.push(_chunk(600), is_speech=False)
+    assert len(segments) == 1
+    assert segments[0].has_speech is False
+
+
+def test_segment_with_any_speech_chunk_is_flagged_and_flag_resets_after_emit() -> None:
+    seg = Segmenter(sample_rate=SAMPLE_RATE, silence_ms=600, max_segment_s=15, min_segment_s=1)
+    segments = seg.push(_chunk(300), is_speech=False)
+    segments += seg.push(_chunk(1000), is_speech=True)
+    segments += seg.push(_chunk(600), is_speech=False)
+    assert len(segments) == 1
+    assert segments[0].has_speech is True
+
+    # 次のセグメントは独立に判定される (無音のみ)。
+    segments = seg.push(_chunk(1500), is_speech=False)
+    segments += seg.push(_chunk(600), is_speech=False)
+    assert len(segments) == 1
+    assert segments[0].has_speech is False
+
+
+def test_speech_flag_survives_short_segment_merge() -> None:
+    seg = Segmenter(sample_rate=SAMPLE_RATE, silence_ms=600, max_segment_s=15, min_segment_s=1)
+    assert seg.push(_chunk(300), is_speech=True) == []
+    assert seg.push(_chunk(600), is_speech=False) == []  # 短すぎて結合継続
+    segments = seg.push(_chunk(1000), is_speech=False)
+    segments += seg.push(_chunk(600), is_speech=False)
+    assert len(segments) == 1
+    assert segments[0].has_speech is True
+
+
+def test_flush_reports_speech_flag() -> None:
+    seg = Segmenter(sample_rate=SAMPLE_RATE, silence_ms=600, max_segment_s=15, min_segment_s=1)
+    seg.push(_chunk(200), is_speech=False)
+    silent_tail = seg.flush()
+    assert silent_tail is not None
+    assert silent_tail.has_speech is False
+
+    seg.push(_chunk(200), is_speech=True)
+    speech_tail = seg.flush()
+    assert speech_tail is not None
+    assert speech_tail.has_speech is True

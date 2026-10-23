@@ -14,6 +14,9 @@ import numpy as np
 @dataclass
 class Segment:
     pcm: np.ndarray
+    # VAD が音声と判定したチャンクを1つでも含むか。False (無音のみ) のセグメントは ASR に渡さない
+    # (Whisper が無音に対して「ご視聴ありがとうございました」等の定型句を幻覚する対策)。
+    has_speech: bool = True
 
     @property
     def sample_count(self) -> int:
@@ -34,6 +37,7 @@ class Segmenter:
         self._chunks: list[np.ndarray] = []
         self._total_samples = 0
         self._silence_run_ms = 0.0
+        self._has_speech = False
 
     def _total_ms(self) -> float:
         return self._total_samples / self.sample_rate * 1000
@@ -42,11 +46,13 @@ class Segmenter:
         self._chunks = []
         self._total_samples = 0
         self._silence_run_ms = 0.0
+        self._has_speech = False
 
     def _emit(self) -> Segment:
         pcm = np.concatenate(self._chunks) if self._chunks else np.array([], dtype=np.int16)
+        has_speech = self._has_speech
         self._reset()
-        return Segment(pcm=pcm)
+        return Segment(pcm=pcm, has_speech=has_speech)
 
     def push(self, chunk: np.ndarray, is_speech: bool) -> list[Segment]:
         """PCM チャンクを1つ積み、確定したセグメントを返す (0個の場合もある)。"""
@@ -59,6 +65,7 @@ class Segmenter:
 
         if is_speech:
             self._silence_run_ms = 0.0
+            self._has_speech = True
         else:
             self._silence_run_ms += chunk_ms
 

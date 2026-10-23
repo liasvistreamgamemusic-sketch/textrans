@@ -55,6 +55,12 @@ class AsrSection(_PathSection):
     context_chars: int = 100
     compute_type: str = "float16"
     device: str = "cuda"
+    # faster-whisper 内蔵 VAD で前後の無音を除いてから認識する (無音幻覚の抑止)。
+    vad_filter: bool = True
+    # faster-whisper に渡す no_speech_threshold。同じ値で、no_speech_prob がこれを超える
+    # Whisper セグメントを自前でも捨てる (faster-whisper 内部のガードは avg_logprob が低いときしか効かず、
+    # 自信ありげに出る定型句の幻覚を通してしまうため)。
+    no_speech_threshold: float = 0.6
 
 
 class VadSection(BaseModel):

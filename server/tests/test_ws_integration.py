@@ -29,14 +29,14 @@ def _wait_until(predicate, timeout: float = 2.0, interval: float = 0.01) -> None
     raise AssertionError("timed out waiting for condition")
 
 
-def _build_app(tmp_path, **config_overrides):
+def _build_app(tmp_path, *, vad_speech: bool = True, **config_overrides):
     cfg = ServerConfig(
         tokens={"path": tmp_path / "tokens.yaml"},
         dictionary={"path": tmp_path / "dictionary.yaml"},
         asr={"backend": "dummy"},
         **config_overrides,
     )
-    app = create_app(cfg, vad_classifier=StubVadClassifier(speech=True), asr_backend=DummyAsrBackend())
+    app = create_app(cfg, vad_classifier=StubVadClassifier(speech=vad_speech), asr_backend=DummyAsrBackend())
     token = app.state.voice.token_store.issue(DEVICE_NAME)
     return app, token
 
@@ -146,6 +146,29 @@ def test_websocket_silence_only_returns_empty_final(tmp_path) -> None:
 
         partial = ws.receive_json()
         assert partial["text"] == ""
+        final = ws.receive_json()
+        assert final["type"] == "final"
+        assert final["text"] == ""
+        assert final["raw_text"] == ""
+
+
+def test_websocket_vad_silence_skips_asr_and_returns_empty_final(tmp_path) -> None:
+    """VAD が全チャンクを非音声と判定した発話は ASR に渡さず (partial なし)、final を空で返す。
+
+    Whisper が無音に対して「ご視聴ありがとうございました」等を幻覚する対策 (設計書 §4.3)。
+    DummyAsrBackend は非ゼロの PCM に対して固定文を返すので、partial が来ないことが
+    「ASR に渡していない」ことの証拠になる。
+    """
+    app, token = _build_app(tmp_path, vad_speech=False)
+    client = TestClient(app)
+    session_id = str(uuid.uuid4())
+    with client.websocket_connect("/v1/dictate", headers={"Authorization": f"Bearer {token}"}) as ws:
+        ws.send_json(_start_payload(session_id))
+        assert ws.receive_json()["type"] == "ready"
+
+        ws.send_bytes(_pcm_bytes(1600, amplitude=1000))  # 振幅はあるが VAD は非音声と判定
+        ws.send_json({"type": "end", "session_id": session_id})
+
         final = ws.receive_json()
         assert final["type"] == "final"
         assert final["text"] == ""

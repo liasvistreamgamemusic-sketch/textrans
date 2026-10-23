@@ -20,23 +20,34 @@ class FasterWhisperBackend:
 
     def __init__(self) -> None:
         self._model = None
+        self._cfg: AsrSection | None = None
 
     def load(self, cfg: AsrSection) -> None:
         from faster_whisper import WhisperModel  # 遅延 import (extra: gpu)
 
         model_ref = str(cfg.model_path) if cfg.model_path else cfg.model
         self._model = WhisperModel(model_ref, device=cfg.device, compute_type=cfg.compute_type)
+        self._cfg = cfg
+
+    def _run(self, audio: np.ndarray, context: str | None) -> str:
+        if self._model is None or self._cfg is None:
+            raise RuntimeError("load() が呼ばれていません")
+        threshold = self._cfg.no_speech_threshold
+        segments, _ = self._model.transcribe(
+            audio,
+            language="ja",
+            initial_prompt=context or None,
+            vad_filter=self._cfg.vad_filter,
+            no_speech_threshold=threshold,
+        )
+        # faster-whisper 内部のガードは no_speech_prob > 閾値 かつ avg_logprob < log_prob_threshold の
+        # ときしかセグメントを捨てないため、無音に対して自信ありげに出る「ご視聴ありがとうございました」等の
+        # 定型句が通ってしまう。ここでは no_speech_prob だけで捨てる (設計書 §4.3)。
+        return "".join(segment.text for segment in segments if segment.no_speech_prob <= threshold).strip()
 
     def warmup(self) -> None:
-        if self._model is None:
-            raise RuntimeError("load() が呼ばれていません")
-        silence = np.zeros(16000, dtype=np.float32)
-        segments, _ = self._model.transcribe(silence, language="ja")
-        list(segments)
+        # vad_filter 有効時は内蔵 VAD (onnx) のロードもここで済ませる。
+        self._run(np.zeros(16000, dtype=np.float32), None)
 
     def transcribe(self, pcm: np.ndarray, context: str | None) -> str:
-        if self._model is None:
-            raise RuntimeError("load() が呼ばれていません")
-        audio = pcm.astype(np.float32) / 32768.0
-        segments, _ = self._model.transcribe(audio, language="ja", initial_prompt=context or None)
-        return "".join(segment.text for segment in segments).strip()
+        return self._run(pcm.astype(np.float32) / 32768.0, context)
