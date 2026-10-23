@@ -14,6 +14,7 @@
 | `voice-llama.service` | systemd ユーザーユニット(テンプレート。`@@..@@` を setup.sh が置換) |
 | `voice-gateway.service` | systemd ユーザーユニット(そのまま配置) |
 | `gpu-peak.sh` | `nvidia-smi` のVRAMピークを記録するベンチ用ヘルパー |
+| `windows/start.bat` / `stop.bat` / `status.bat` | Windows から ssh してサービスを起動・停止・状態確認する(ダブルクリックで実行。接続先は `windows/voice-config.bat`) |
 
 ## 手順
 
